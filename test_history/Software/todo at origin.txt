@@ -1,0 +1,140 @@
+
+
+  - update the job names for 51217 and 51243 so that the then have the proper names.
+
+  *- update: sub Map_Panel_to_Boards so that it creates the proper serial number.
+    I would imagine that it also uses the function listed at the bottom.
+
+  *- change the log-out statement so that it includes the serial number in the filename.
+    This serial number will be the correct serial number for the board.
+    it will use the function at the end of this document:
+    
+    log out will be:
+
+    log out Log_File$(I) & Serial$(I) & "-" & Dateandtime$ & "-" & th$ & "-" & val$(I); append
+    
+  - Ensure all log out statements are correct!
+    
+  - add the python call to the testplan - once for each board on the panel
+    (assuming it was enabled at the beginning).
+    
+  *- change the log level of the testplan to failures (origin may require that certain
+    tests are logged. If that is the case - make the log level higher - then reduce it 
+    again.
+    
+  - Make all board detect tests push a variable out - to prevent the need to change
+    the board detect test.
+    
+  - include the limits (indictments or something).
+
+  - work out what is included in the other log file.
+
+  - look into ways of making the database update none blocking
+
+  - Redirect the report from the printer to a text file.
+    The log software should be able to use this text file to provide extra info.
+
+ *- if we can also re-direct the contents of the report file to the screen.
+    This may be possible with the ; echo command.
+
+  - Update the board name in the testplan
+
+  - use the python time library to convert the provided
+    time and date to epoch time.
+    
+  - ensure that when the python script is called - the serial(I)
+    is sent, to allow for panels with different boards fitted.
+
+  - induce a testjet fail with both pins and drive thru.
+  
+  - definatly trigger a digital test fail.
+  
+  - add the operator prompt
+  
+  - add the pure programming mode prompt
+  
+  -  add the
+  dim Args$[255]
+  dim DB_CMD$[512]
+             at the top
+  
+situations to simulate:
+  failed pins failed after
+  failed pins passed after - results in retested board.
+  
+  failed pre_shorts
+  failed shorts with open
+  failed shorts with short
+  failed shorts with phantom
+  failed analog test
+  failed testjet test
+  failed digital test
+  boards not selected.
+  if boards are not selected, 
+      logs are not generated
+      (GOOD)
+      take the start date from the btest log
+      not the script argument.
+      create pins fail - for wpr statistics.
+      convert status to eval list ( [a,b,c,d] )
+      using number of boards on panel to make it
+      a sensible size and universal.
+  failed 
+
+!this function converts the status array into a string,
+!which will be passed to the script which updates 
+!the database.
+def fn Generate_Status_List$
+    global Number_Boards_On_Panel
+    global Status(*)
+    
+    Python_List$ = "["
+
+
+    for I = 1 to Number_Boards_On_Panel
+        !for each number added (after the first)
+        !provide a comma to seperate them
+        if I <> 1 then Python_List$ = Python_List$ & ","
+        Python_List$ = Python_List$ & val$(Status(I))
+        
+    return Python_List$
+fnend
+
+ 
+
+
+def fn Update_Serial_Num$(Board_Position, Serial$)
+    !board 1 has no change to serial number
+    !so modifier = 0.
+    !The serial number for board 2 will be
+    !increase by 1, so board number - 1
+    !will equal the serial modifier.
+    Serial_Modifier = Board_Position - 1
+    
+    Job_Code$ = Serial$[1;3]
+    
+    !The length is obtained to allow us to 
+    !append the correct number of zeros.
+    Base_Serial_number_Len = len(Serial$[4;20])
+    Base_Serial_number    = val(Serial$[4;20])
+    
+    !by adding the modifier we now have the actual
+    !serial number as printed on the board.
+    Serial_Number$ = val$(Base_Serial_number + Serial_Modifier)
+    Serial_Number_Len = len(Serial_Number$)
+    
+    Zeros_Required = Base_Serial_number_Len - Serial_Number_Len
+    !append the zeros to the start of the serial number
+    for I = 1 to Zeros_Required
+        Serial_Number$ = "0" & Serial_Number$
+    next I
+    
+    
+    return Job_Code$ & Serial_Number$
+    
+
+fnend
+
+
+Add append to all of the execute calls to allow them to run without clearing the screen
+    

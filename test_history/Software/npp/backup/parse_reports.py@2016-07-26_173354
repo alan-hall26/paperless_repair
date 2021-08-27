@@ -1,0 +1,48 @@
+
+import re
+
+shorts_regex = re.compile(r'^Shorts Report for "(?P<Test_Name>.+)".$')
+shorts_end_regex = re.compile(r'End, \d+ Problems? Reported')
+
+#This function when given a location
+#of a test report 
+#(which is the data which is normally
+#spat out of the printer)
+#converts it into a dictionary.
+def extract_report_info(dir):
+
+    Shorts_Test = False
+    Test_Name   = ""
+    
+    report_dict = {}
+    
+    with dir.open("r") as report_data:
+        for line in report_data:
+            
+            if not line:
+                continue
+                
+            if line.startswith("Shorts Report for"):
+                Shorts_Test = True
+                re_shorts_name = shorts_regex.match(line)
+                if re_shorts_name:
+                    Test_Name   = re_shorts_name.group("Test_Name")
+                continue
+            
+            if Shorts_Test:
+                
+            
+            
+            
+            
+                if shorts_end_regex.search(line):
+                    Shorts_Test = False
+                    continue
+                     
+            line = line.strip()    
+            
+
+            
+
+
+    return report_dict

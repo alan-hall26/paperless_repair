@@ -1,0 +1,1 @@
+test "analog/" & val$(I) & "%relay_control";V

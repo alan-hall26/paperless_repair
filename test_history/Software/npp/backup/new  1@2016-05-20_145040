@@ -1,0 +1,7 @@
+   wire "1%___1961" to  20563 s using analog
+   wire "1%D-TERM"  to 204166 i using analog
+   wire "1%0V"      to 205162 g using analog
+   
+   wire "4%D-TERM"  to  21616 s using analog
+   wire "4%___2158" to  21727 i using analog
+   wire "4%___2158" to 216130 b using analog

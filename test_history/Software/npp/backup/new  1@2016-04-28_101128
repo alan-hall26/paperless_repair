@@ -1,0 +1,3 @@
+Name$ = "r12" |compile "1%"&Name$;version""|compile "2%"&Name$;version""|compile "3%"&Name$;version""|compile "4%"&Name$;version""
+
+Name$ = ""|input"",Name$ |compile "1%"&Name$;version""|compile "2%"&Name$;version""|compile "3%"&Name$;version""|compile "4%"&Name$;version""

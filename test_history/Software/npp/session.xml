@@ -1,0 +1,21 @@
+<NotepadPlus>
+    <Session activeView="0">
+        <mainView activeIndex="0">
+            <File firstVisibleLine="326" xOffset="0" scrollWidth="833" startPos="10311" endPos="10311" selMode="0" lang="Normal Text" encoding="-1" filename="O:\Production\Agilent_3070_Testers\51243\testplan_logging" backupFilePath="" originalFileLastModifTimestamp="1469552608">
+                <Mark line="1411" />
+            </File>
+            <File firstVisibleLine="0" xOffset="0" scrollWidth="665" startPos="187" endPos="187" selMode="0" lang="Batch" encoding="-1" filename="O:\Production\Test_History\Software\update_database.bat" backupFilePath="" originalFileLastModifTimestamp="1469547253" />
+            <File firstVisibleLine="24" xOffset="0" scrollWidth="658" startPos="1930" endPos="1930" selMode="0" lang="Normal Text" encoding="-1" filename="O:\Production\Test_History\Software\todo at origin.txt" backupFilePath="" originalFileLastModifTimestamp="1469548806" />
+            <File firstVisibleLine="20" xOffset="0" scrollWidth="693" startPos="1412" endPos="1412" selMode="0" lang="Python" encoding="-1" filename="O:\Production\Test_History\Software\parse_reports.py" backupFilePath="" originalFileLastModifTimestamp="1469551793" />
+            <File firstVisibleLine="0" xOffset="0" scrollWidth="665" startPos="893" endPos="893" selMode="0" lang="Python" encoding="-1" filename="O:\Production\Agilent_3070_Testers\51243\debug\analog\get_test.py" backupFilePath="" originalFileLastModifTimestamp="1466417650" />
+        </mainView>
+        <subView activeIndex="3">
+            <File firstVisibleLine="36" xOffset="0" scrollWidth="833" startPos="2639" endPos="2607" selMode="0" lang="Normal Text" encoding="-1" filename="O:\Production\Agilent_3070_Testers\51243\testplan_logging" backupFilePath="" originalFileLastModifTimestamp="1469552608">
+                <Mark line="1411" />
+            </File>
+            <File firstVisibleLine="128" xOffset="0" scrollWidth="735" startPos="4197" endPos="4197" selMode="0" lang="Python" encoding="-1" filename="O:\Production\Test_History\Software\db_update.py" backupFilePath="" originalFileLastModifTimestamp="1469552463" />
+            <File firstVisibleLine="427" xOffset="0" scrollWidth="791" startPos="15484" endPos="15484" selMode="0" lang="Python" encoding="-1" filename="O:\Production\Test_History\Software\sql_lib.py" backupFilePath="" originalFileLastModifTimestamp="1469551984" />
+            <File firstVisibleLine="0" xOffset="0" scrollWidth="280" startPos="0" endPos="0" selMode="0" lang="Normal Text" encoding="-1" filename="O:\Production\Agilent_3070_Testers\51243\debug\report" backupFilePath="" originalFileLastModifTimestamp="1469552771" />
+        </subView>
+    </Session>
+</NotepadPlus>

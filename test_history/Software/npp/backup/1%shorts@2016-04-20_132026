@@ -1,0 +1,187 @@
+!!!!    9    0    1 1459501658   0000                                         
+!IPG: rev 07.20p  Fri Apr 01 10:07:39 2016
+threshold          16
+settling delay 50.00u
+!! Start of Section 1
+short "#%+8V4" to "#%___25556"
+short "#%+BATV" to "#%___30621"
+short "#%___25454" to "#%___4957"
+short "#%___25454" to "#%___4955"
+short "#%___12918" to "#%___25454"
+short "#%+12V" to "#%_NONE_9"
+short "#%___25460" to "#%___17484"
+short "#%___25460" to "#%___17446"
+short "#%___25460" to "#%___2669"
+short "#%___25460" to "#%___2724"
+short "#%0V" to "#%___976"
+short "#%0V" to "#%___9237"
+short "#%0V" to "#%TMP-F-TB"
+short "#%0V" to "#%0V-IN"
+short "#%+3V3" to "#%___23259"
+report phantoms
+!! Start of Section 2
+threshold        1000
+nodes "#%___146"
+nodes "#%___1570"
+nodes "#%___2876"
+nodes "#%___5624"
+nodes "#%___8392"
+nodes "#%___10476"
+nodes "#%___16836"
+nodes "#%___24156"
+nodes "#%___30436"
+nodes "#%___30453"
+nodes "#%___31036"
+nodes "#%_NONE_1"
+nodes "#%_NONE_2"
+!nodes "#%_NONE_3"     ! Node not accessible
+!nodes "#%_NONE_4"     ! Node not accessible
+!nodes "#%_NONE_5"     ! Node not accessible
+!nodes "#%_NONE_6"     ! Node not accessible
+!nodes "#%_NONE_7"     ! Node not accessible
+nodes "#%_NONE_8"
+nodes "#%_NONE_10"
+nodes "#%_NONE_11"
+!nodes "#%_NONE_12"     ! Node not accessible
+!nodes "#%_NONE_13"     ! Node not accessible
+!nodes "#%_NONE_14"     ! Node not accessible
+!nodes "#%_NONE_15"     ! Node not accessible
+nodes "#%AIN0"
+nodes "#%AIN3"
+nodes "#%BL-PWM"
+nodes "#%fix_led"
+nodes "#%FLT-RLY"
+
+nodes "#%REM-TEST"
+nodes "#%REM-TST-TB"
+nodes "#%SCREW-TAMPER"
+nodes "#%SELF_TEST"
+!nodes "#%relay_control"   !fixture node
+!nodes "#%sp_board_detect" !fixture node
+!nodes "#%sp_d5"           !fixture node
+!nodes "#%sp_d6"           !fixture node
+!nodes "#%sp_d7"           !fixture node
+!nodes "#%sp_d8"           !fixture node
+!nodes "#%sp_d9"           !fixture node
+!nodes "#%sp_d10"          !fixture node
+!nodes "#%sp_d12"          !fixture node
+!nodes "#%sp_d16"          !fixture node
+!nodes "#%sp_gate_closed"  !fixture node
+!nodes "#%sp_jp11"         !fixture node
+!nodes "#%sp_tb1"          !fixture node
+!nodes "#%sp_tb2"          !fixture node
+!! Start of Section 3
+threshold           8
+nodes "#%LID-WALL-TAMPER"
+nodes "#%___22912"
+nodes "#%STROBE-TRG"
+nodes "#%BL-CONTROL"
+nodes "#%ENG-HOLD-OFF"
+nodes "#%___4267"
+nodes "#%___1961"
+nodes "#%BELL-TRG"
+nodes "#%12V-IN"
+nodes "#%BATT-CHARGE"
+nodes "#%___28977"
+nodes "#%___28884"
+nodes "#%NET_TX"
+nodes "#%___2157"
+nodes "#%___20354"
+nodes "#%___4201"
+nodes "#%___13897"
+nodes "#%___13821"
+nodes "#%___13743"
+nodes "#%___5116"
+nodes "#%___4417"
+nodes "#%BATT-LOAD"
+nodes "#%___30376"
+nodes "#%___9293"
+nodes "#%STROBE-DRV"
+nodes "#%___20348"
+nodes "#%___20276"
+nodes "#%___20352"
+nodes "#%___17344"
+nodes "#%___15801"
+nodes "#%___4220"
+nodes "#%LED-RIGHT"
+nodes "#%___2243"
+nodes "#%LED-LEFT"
+nodes "#%___1921"
+nodes "#%___15731"
+nodes "#%___15219"
+nodes "#%TRIG-CTRL"
+nodes "#%TAMP-RLY"
+nodes "#%___31118"
+nodes "#%___15672"
+nodes "#%PIEZO-DRV"
+nodes "#%___5609"
+nodes "#%___2158"
+nodes "#%TMP-R"
+nodes "#%D-TERM"
+nodes "#%___29199"
+nodes "#%SWIM"
+nodes "#%ST_LINK_SWIM"
+nodes "#%SWIM_RES"
+nodes "#%___28837"
+nodes "#%___16768"
+!! Start of Section 5
+nodes "#%NET_RX"
+nodes "#%NET_CLK"
+nodes "#%___5049"
+nodes "#%___4369"
+nodes "#%___16246"
+nodes "#%___31041"
+nodes "#%___9424"
+settling delay 55.00u
+nodes "#%ST_LINK_RESET"
+nodes "#%___32705"
+nodes "#%___8281"
+nodes "#%___189"
+nodes "#%___28199"
+nodes "#%___20347"
+nodes "#%___20327"
+nodes "#%BATT-V"
+nodes "#%___5711"
+nodes "#%NETREF"
+settling delay 549.5u
+nodes "#%___17694"
+nodes "#%___23192"
+nodes "#%___947"
+nodes "#%___20355"
+nodes "#%___26158"
+!! Start of Section 6
+settling delay 329.6m
+nodes "#%___976"
+nodes "#%___9237"
+nodes "#%TMP-F-TB"
+nodes "#%0V-IN"
+nodes "#%0V"
+settling delay 68.27m
+nodes "#%___17484"
+settling delay 180.8m
+nodes "#%___17446"
+nodes "#%___2669"
+nodes "#%___2724"
+nodes "#%___25460"
+settling delay 25.34m
+nodes "#%___23259"
+settling delay 26.50m
+nodes "#%+3V3"
+settling delay 2.568m
+nodes "#%___25556"
+nodes "#%+8V4"
+settling delay 202.4u
+nodes "#%___30621"
+settling delay 50.00u
+nodes "#%+BATV"
+settling delay 3.519m
+nodes "#%___25454"
+settling delay 3.775m
+nodes "#%___4957"
+nodes "#%___4955"
+nodes "#%___12918"
+settling delay 50.00u
+nodes "#%_NONE_9"
+settling delay 25.96m
+nodes "#%+12V"
+

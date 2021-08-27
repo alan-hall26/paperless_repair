@@ -1,0 +1,21 @@
+for board and gate detect.
+
+
+sub Update_Levels(Report_level$, Log_level$)
+
+
+if Report_level$ = "all" then report level is all
+if Report_level$ = "none" then report level is none
+if Report_level$ = "log" then report level is log
+if Report_level$ = "report" then report level is report
+
+
+
+if Log_level$ = "all" then log level is all
+if Log_level$ = "analog" then log level is analog
+if Log_level$ = "board" then log level is board
+if Log_level$ = "failures" then log level is failures
+if Log_level$ = "indictments" then log level is indictments
+if Log_level$ = "manual" then log level is manual
+if Log_level$ = "none" then log level is none
+subend

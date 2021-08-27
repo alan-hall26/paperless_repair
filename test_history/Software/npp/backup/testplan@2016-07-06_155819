@@ -1,0 +1,2732 @@
+!!!!    4    0    1 1463363480   0000                                         
+! Testplan for 51243  Wed Apr 20 13:42:16 2016
+
+! P0030
+dim BoardSet_boards_1_to_4(1:4)
+
+!   AGILENT ICT STANDARD TESTMAIN      Revision: "Agilent i3070 07.20p 0808 WN"
+!   PANELIZATION VERSION
+!##############################################################################
+!   This "main" program sequences execution of testplan subroutines and
+!   assumes that the current working directory is already set to the
+!   appropriate board directory.
+!   This testmain has included the code to support the following optional
+!   features:
+!        Data Logging for PushButton QSTATS, QSTATS-II and ART
+!        Chek-Point (pin tests)
+!        Boundary Scan: Interconnect Plus & ScanWorks
+!        Panelized Boards
+!        Agilent Intelligent Yield Enhancement Test (IYET)
+!        Agilent Worst Probe Report (WPR)
+!        Agilent First Pass Yield (FPY)
+!   Once the testplan is working, you may selectively enable
+!   any combination of the features by changing the 'flag' variables
+!   in the subroutine "Set_Custom_Options".  Use the following command:
+!         find  "!   Other"&" parameters"  ! takes you to option settings
+!
+!   Turn learn on and run the testplan on a known good board.  After the
+!   learning run is successfully completed, the testplan is ready for
+!   customization, debug and production testing.
+!   Analog limits are logged by standard testmain if and only if the
+!   learn flag is on.  Limits must be logged once each time they change
+!   in order for PushButton Q-STATS or Q-STATS II to produce histograms.
+!
+!   If flash is to be programmed on this board, the testplan needs to have the
+!   locations marked !flash! modified or reviewed.  Please review the flash
+!   manual for full explanation. Key elements include:
+!
+!   full disabling of buses and upstream control lines is required for safety
+!   use ID check for digital test subroutine to ensure proper part placement
+!   Cycle power if required to three-state upstream devices
+
+dim InvOn$[28], InvOff$[11], O$[128], Retry_PinTest$[168]
+dim Cycle_Vacuum$[128], Recycle_Vacuum$[128]
+dim Testmain_Revision$[70]
+dim Batch$[12], Oper$[25], Testplan$[14], Testrev$[4], Status(0:256)
+dim Board$(0:256)[14], Board_Rev$(0:256)[14], Known_Good$[1], Serial$(0:256)
+dim Proc_Step$[5], Log_Path$[80], BoardSet(0:256), Log_File$(0:256)
+dim BoardSet_flash(0:256)
+! The following is used in the power-supply setup routine for parallel
+! power supplies.  It holds masks for comparison.
+dim Psgroup(1:16)
+option bit 32     ! Prevents range error when comparing Psgroup with MSB set
+! IYET
+dim IYET_Failing_Tests$(0:2047)[40]
+dim IYET_Retest_Failing_Devices$(0:8191)[40]
+dim IYET_Top_Retests$(0:8191,2)[40]
+
+!       INITIALIZE BREAK AND ERROR TRAPPING
+
+on break recover Break_Trap
+on error recover Error_Trap
+
+!       INITIALIZE VARIABLES
+
+call Initializations
+
+!       SET UP FAILURE ACKNOWLEDGMENT
+acknowledge all failures
+
+!       MAIN LOOP FOR REPEATEDLY TESTING A BOARD
+!          (executed only once if "learning")
+
+Wait_For_Start:
+
+Dateandtime$ = datetime$
+Pass_Fail_Reported = False
+Logging_Started = False
+Tests_On_This_Panel = 0
+print | print Place_Board_Prompt$
+wait for start
+if Serializing then
+  print using "@"
+    loop  
+      Panel_Serial$ = fn Get_Serial_Num$(Serial_Prompt$)
+      
+      if bvi$ = "ES100" then Version_Check$ = "ESA"
+      if bvi$ = "ES150" then Version_Check$ = "ESB"
+      
+      exit if Panel_Serial$[1;3] = Version_Check$
+      
+      print "Wrong Variant of PCB has been placed in the Fixture."
+      print "Please Ensure only boards labeled: "&  Version_Check$
+      print "Are inserted into the Fixture."
+      
+    end loop
+  
+  Known_Good$ = "n"
+  if Panel_Serial$ = Known_Good_Board$ then Known_Good$ = "y"
+  call Map_Panel_to_Boards   ! Map panel serial number to indiv. boards
+end if
+if Using_Multiple_Versions and Version_Prompting = Per_Board then
+  call Get_Version_Label
+  if nrun = 1 or Version_Inits_Needed then
+    call Do_Version_Inits
+  end if
+end if
+
+! Get xout info for the panel.  If learning, all boards on the panel
+! will be enabled.
+
+if not learning then select boards on panel BoardSet(*)
+
+!       RE-TEST AFTER PIN-TEST FAILURE
+
+ChekPoint_Retry:
+
+print using "@,/"
+if Serializing then print Put$; Panel_Serial$
+Tests_On_This_Panel = Tests_On_This_Panel + 1
+if Tests_On_This_Panel > 1 then
+  print Rep_Test$
+  Count = 0
+  for I = 1 to Number_Boards_On_Panel
+    if BoardSet(I) then
+      if Count mod 16 = 0 and Count <> 0 then print
+      print using "4d,#"; I
+      Count = Count + 1
+    end if
+  next I
+  print
+end if
+
+!       START LOGGING FOR THIS PANEL, AND EACH BOARD
+
+report is Report_Printer$
+if Logging then call Start_Logging
+Logging_Started = True  ! Also used as reporting flag
+
+! Initialize Status array and panel flags
+
+if Tests_On_This_Panel = 1 then
+  All_Boards_Xed_Out = True
+end if
+for I = 1 to Number_Boards_On_Panel
+  if BoardSet(I) then
+    Status(I) = Passed
+    if Tests_On_This_Panel = 1 then
+      All_Boards_Xed_Out = False
+    end if
+  else
+    if Tests_On_This_Panel = 1 then Status(I) = Xed_Out
+  end if
+next I
+if All_Boards_Xed_Out then goto Cleanup
+
+!       ACTIVATE VACUUM IN PREPARATION FOR TEST
+Temp_report$ = rli$
+Temp_log$ = lli$
+
+unpowered
+
+report level is none
+log level is none
+
+loop
+    test "1%board_detect"
+    Board_res = dutfailed
+    test "1%gate_closed"
+    Gate_res = dutfailed
+
+    exit if (Board_res=0) and (Gate_res=0)
+    
+    print "    Ensure Board is fitted and Gate is closed"
+    print "    Press Enter to continue..."
+    Dummy$ = ""
+    input"", Dummy$
+    
+
+
+end loop
+
+clear failures
+call Update_Levels(Temp_report$, Temp_log$)
+!print rli$, lli$
+!pause
+report level is report
+
+if Tests_On_This_Panel = 1 then faon 3
+
+!faoff 1.5
+!faon
+! Warning: Reducing the value for 'faon' from the default value of 1.5
+! can potentially cause testhead damage.
+
+!       CHECK FIXTURE CONTACT, THEN
+!       LEARN OR TEST (OR RE-TEST) BOARD
+
+unpowered
+
+! If doing Pin Test pre-test and it fails, mark those boards
+! as not to be tested.
+
+All_Failed = False
+if (not learning) and Chek_Point_Mode = Pretest then
+  if not fn Chek_Point_OK then
+    call Update_Status (Failed_Pin_Test, All_Failed)
+  end if
+end if
+if not All_Failed then call Test_Sections
+
+!       IF ANY BOARD FAILED TEST, TRY TO FIX IT BY RUNNING PIN TEST
+
+Cleanup:
+
+Enable_Retest = False
+for I = 1 to Number_Boards_On_Panel
+  board number is I
+  BoardSet(I) = False              ! Don't retest passing boards
+  if boardfailed and Status(I) <> Failed_In_Preshorts then
+    if Tests_On_This_Panel = 1 and Chek_Point_Mode = Failures then
+      Enable_Retest = True
+      BoardSet(I) = True
+    end if
+  end if
+next I
+if Enable_Retest then
+  unpowered
+  if fn Chek_Point_OK then goto ChekPoint_Retry
+end if
+
+!       REMOVE BOARD FROM TESTHEAD AND GENERATE PASS/FAIL MESSAGE
+!       THEN TERMINATE LOGGING (IF ENABLED) AND REPORTING
+
+faoff
+if All_Boards_Xed_Out then
+  print All_Xout$
+  for I = 1 to Number_Boards_On_Panel
+    board number is I
+    fail device
+    if Using_Graphics then
+      board graphics highlight fail board I, Err
+    else
+      Err = True
+    end if
+    if Err then print "Board "; I; " failed"
+    report All_Xout$
+  next I
+end if
+if panelfailed then
+  print "     **  ";Fail_Msg$;"  **"
+  if not Using_Graphics then copy Fail_File$ over "/dev/tty"
+else
+  print "     **  ";Pass_Msg$;"  **"
+  if not Using_Graphics then copy Pass_File$ over "/dev/tty"
+end if
+Pass_Fail_Reported = True
+for I = 1 to Number_Boards_On_Panel
+  board number is I
+  if Status(I) <> Xed_Out then
+    if boardfailed then
+      if not Using_BtBasic then first pass yield 0, 1 !FPY not Passed and Tested
+      if Using_Graphics then
+        board graphics highlight fail board I, Err
+      else
+        Err = True
+      end if
+      if Err then print "Board "; I; " failed"
+      if Status(I) = Failed_Pin_Test then
+        print But$, I, " ** ";Pin_Msg$;" **"
+      end if
+      if learning then Status(I) = Failed_In_Learn
+      if Serializing then report Serial_Nr$ & Serial$(I)
+    else
+      if not Using_BtBasic then first pass yield 1, 1 !FPY Passed and Tested
+      if Using_Graphics then
+        board graphics highlight pass board I, Err
+      end if
+    end if
+  end if
+  if Logging and Logging_Started then
+    ! Do 'log board end' on panel later
+    if Status(I) <> Xed_Out then
+      log board end Status(I)
+      !log out Log_File$(I)&val$(I)&"-"&Dateandtime$&System$&th$; append
+      log out Log_File$(I) & Serial$(I) & "-" & Dateandtime$ & "-" & th$ & "-" & val$(I); append
+    end if
+    log clear
+  end if
+
+  ! Log a test record into the panel log buffer showing which board failed
+  ! (for PushButton QSTATS).
+  if Logging and boardfailed and Status(I) <> Xed_Out then
+    board number is Panel_Itself
+    log "{@D-T|1||||Board_" & val$(I) & "}"
+  end if
+next I
+
+! Now finish the log buffer for the panel
+if Logging and not All_Boards_Xed_Out then
+  board number is Panel_Itself
+  if panelfailed then
+    log board end Failed
+  else
+    log board end Passed
+  end if
+  log out Log_File$(0) & Dateandtime$ & System$ & th$; append
+  log clear
+end if
+
+Eject_Ticket: image 13/
+
+if panelfailed then
+  if Using_Buffered_Reporting then
+    for I = 1 to Number_Boards_On_Panel-1
+      board number is I
+      if boardfailed then report out
+    next I
+    board number is Number_Boards_On_Panel
+    report using Eject_Ticket
+    report out
+  else
+    report using Eject_Ticket
+  end if
+end if
+
+report is *
+for I = Panel_Itself to Number_Boards_On_Panel
+  board number is I
+  report clear
+  clear failures
+next I
+Logging_Started = False
+
+!       END PROGRAM IF LEARNING. OTHERWISE RETURN TO MAIN LOOP
+
+if learning then
+   learn off
+   print | print Learning_Off_Msg$ | print Stop_Msg$
+   beep
+   stop
+end if
+goto Wait_For_Start
+
+!       END OF MAIN LOOP
+!       INTERRUPT HANDLING
+! This is the normal entry for Break/Stop detection
+
+Break_Trap:
+off break
+off error
+print "     ";Break_Msg$
+unpowered,Err
+if Err then print errmlong$
+if Logging and Logging_Started then
+  for I = Panel_Itself to Number_Boards_On_Panel
+    board number is I
+    log board end Break_Code
+    !log out Log_File$(I) & val$(I) & "-" & Dateandtime$ & System$ & th$; append
+    log out Log_File$(I) & Serial$(I) & "-" & Dateandtime$ & "-" & th$ & "-" & val$(I); append
+    log clear
+  next I
+end if
+faoff, Err
+if Err then print errmlong$
+goto Abort
+
+! This is the normal entry for errors occurring in Basic statements
+
+Error_Trap:
+off error
+print errmlong$
+beep
+SaveErrn = errn
+unpowered,Err
+if Err then print errmlong$
+
+!       IF A BOARD IS PRESENT, FAIL IT
+!       THEN TERMINATE LOGGING (IF ENABLED) AND REPORTING
+
+if Logging_Started and not Pass_Fail_Reported then
+  print "     **  ";Fail_Msg$;"  **"
+  if not Using_Graphics then copy Fail_File$ over "/dev/tty"
+  for I = 1 to Number_Boards_On_Panel
+    board number is I
+    if Status(I) <> Xed_Out then
+      fail device
+      report Board_Not_Tested$
+      if Using_Graphics then
+        board graphics highlight fail board I, Err
+      else
+        Err = True
+      end if
+      if Err then print "Board "; I; " failed"
+      if Status(I) = Failed_Pin_Test then
+        print But$, I, " ** ";Pin_Msg$;" **"
+      end if
+      if learning then Status(I) = Failed_In_Learn
+      if Serializing then report Serial_Nr$ & Serial$(I)
+    end if
+  next I
+  if Using_Buffered_Reporting then
+    for I = 1 to Number_Boards_On_Panel-1
+      board number is I
+      if boardfailed then report out
+    next I
+    board number is Number_Boards_On_Panel
+    report using Eject_Ticket
+    report out
+  else
+    report using Eject_Ticket
+  end if
+  report is *, Err
+  for I = 1 to Number_Boards_On_Panel
+    board number is I
+    report clear
+  next I
+end if
+if Logging_Started and Logging then
+  for I = Panel_Itself to Number_Boards_On_Panel
+    board number is I
+    log using """{@RPT~80|"",80a,""}""" ; errm$(SaveErrn)
+    log board end Error_Code, SaveErrn
+    !log out Log_File$(I) & val$(I) & "-" & Dateandtime$ & System$ & th$; append
+    log out Log_File$(I) & val$(I) & "-" & Dateandtime$ & System$ & th$; append
+    log clear
+  next I
+end if
+
+!       REMOVE THE BOARD FROM THE TESTHEAD
+
+faoff, Err
+if Err then print errmlong$
+if learning or Err then goto Abort
+on error recover Error_Trap
+goto Wait_For_Start
+
+!       ABORT PROGRAM: UNRECOVERABLE ERROR, LEARN ERROR OR STOP KEY
+
+Abort:
+off break
+off error
+probe report off
+report is *, Err
+log is *, Err
+
+beep
+if (nrun=1) and not Did_First_Run_Inits then
+  print No_Init_Warning$
+  clear nrun
+else
+  if Version_Inits_Needed then
+    print No_Version_Init_Warning$
+    clear nrun
+  end if
+end if
+print "     ";Stop_Msg$
+beep
+stop
+end
+
+!       END OF ERROR TRAPS
+
+!       Test/Learn Sections (Subroutine)
+!         [ Assumes unpowered mode. ]
+! Note concerning LEARN MODE:  some sections are not truly "learned" but are
+! run in learn mode for other reasons.  For example, analog tests may be run
+! in learn mode in order to log limits information used by Pushbutton QSTATS,
+! and preshorts/shorts are run "just in case" -- to avoid bad learns & damage.
+! To keep a section from being run in learn mode, place 'if not learning then'
+! just before that section and place 'end if' just after it.
+!##############################################################################
+sub Test_Sections
+global PreshortsMsg$, ShortsMsg$, PowerMsg$, DigitalMsg$, AnalogMsg$
+global DigitalFuncMsg$, AnalogPoweredMsg$, BScanIncktMsg$, BScanIntconMsg$
+global Status(*), Failed_In_Preshorts, Failed_In_Shorts, Failed_In_Functional
+global Failed_In_Digital, Failed_In_Power_Supplies, Failed_In_Analog
+global Logging, Number_Boards_On_Panel, True, False, BoardSet(*)
+global Mode$, Failed_In_BScan, Xed_Out
+global VectorlessTestMsg$, Failed_In_VectorlessTest
+global PolarityMsg$, Failed_In_Polarity_Check
+global BScanPShortsMsg$
+global ConnectCheckMsg$, Failed_In_ConnectCheck
+global VerifyGroundsMsg$, Failed_In_Verify_Grounds
+global Failed_In_Flash, FlashProgMsg$, Programming
+global AnalogClusterMsg$, Failed_In_Analog_Cluster
+global BScanSiNailsMsg$, Failed_In_BScan_SiNails
+global CoverExtendMsg$, Failed_In_Cover_Extend
+global SW_ScanPathVerifyMsg$, Failed_In_SW_Testing
+global SW_DrVerifyMsg$, SW_IrVerifyMsg$
+global SW_InterconnectMsg$, SW_MemInterconnectMsg$
+global SW_ClusterMsg$, SW_MemBistMsg$
+global SW_ProgrammingMsg$, Failed_In_SW_Programming
+global SW_FlashMsg$, Failed_In_SW_Flash
+global PrePoweredMsg$, Failed_In_Pre_Powered
+global All_Failed
+! IYET
+global Using_IYET, Sampling, IYET_Preshorts_Attempts, IYET_Shorts_Attempts
+global IYET_Analog_Tests_Attempts, IYET_VectorlessTest_Attempts
+
+ProgrammingOnly = False
+
+if Using_IYET then
+  call IYET (PreshortsMsg$, IYET_Preshorts_Attempts)
+else
+  call Pre_Shorts (Failed_In_Preshorts, Mode$ & PreshortsMsg$)
+end if
+if All_Failed then subexit
+
+if Using_IYET then
+  call IYET (ShortsMsg$, IYET_Shorts_Attempts)
+else
+   call Shorts (Failed_In_Shorts, Mode$ & ShortsMsg$)
+end if
+if All_Failed then subexit
+
+if ProgrammingOnly then goto Powerup
+
+if Logging or not learning then
+  if Using_IYET and not learning and not Sampling then
+     call IYET (AnalogMsg$, IYET_Analog_Tests_Attempts)
+  else
+     call Analog_Tests (Failed_In_Analog, Mode$ & AnalogMsg$)
+  end if
+  if All_Failed then subexit
+end if
+
+
+
+if Using_IYET then
+  call IYET (VectorlessTestMsg$, IYET_VectorlessTest_Attempts)
+else
+  call VectorlessTest (Failed_In_VectorlessTest, Mode$ & VectorlessTestMsg$)
+end if
+if All_Failed then subexit
+
+
+
+Powerup:
+powered
+
+
+call Setup_Power_Supplies (Failed_In_Power_Supplies, PowerMsg$)
+if All_Failed then subexit
+
+if ProgrammingOnly then goto Program_Boards
+
+!call Digital_Tests (Failed_In_Digital, Mode$ & DigitalMsg$)
+!if All_Failed then subexit
+
+
+call Analog_Functional_Tests (Failed_In_Functional, Mode$ & AnalogPoweredMsg$)
+if All_Failed then subexit
+
+!to make programming stable
+call Cycle_Power_On_Board
+
+Program_Boards:
+
+call Functional_Tests (Failed_In_Functional, Mode$ & DigitalFuncMsg$)
+if All_Failed then subexit
+
+
+
+
+
+subend
+
+!##############################################################################
+sub Update_Status (Failure_Type, All_Failed)
+global True, False, Number_Boards_On_Panel, BoardSet(*), Status(*)
+global Failed_Board$, Xed_Out, Failed_In_BScan, Failed_In_Shorts
+global Failed_In_SW_Testing
+! IYET
+global IYET_Skip_Update_Status
+
+if IYET_Skip_Update_Status then subexit
+
+All_Failed = True
+Fail_Count = 0
+for I = 1 to Number_Boards_On_Panel
+  if BoardSet(I) then
+    board number is I
+    if boardfailed then
+      call Disconnect_Power_On_Board (I)
+      Status(I) = Failure_Type
+      BoardSet(I) = False
+      if Fail_Count = 0 then
+        print tab(8); Failed_Board$
+      else
+        if Fail_Count mod 16 = 0 then print
+      end if
+      if Fail_Count mod 16 = 0 then print using "6a,#"; "      "
+      print using "4d,#"; I
+      Fail_Count = Fail_Count + 1
+    else
+      if Status(I) <> Xed_Out then All_Failed = False
+    end if
+  end if
+next I
+if Fail_Count <> 0 then print
+subend
+
+!       Pin Test Subroutines
+
+!##############################################################################
+def fn Chek_Point_OK
+! This is the subroutine for forcing the testing of pin contacts.
+! If this routine is called before Test_sections (Chek_Point_Mode = Pretest),
+! then the internal status will be set to Passed or Failed_Pin_Test for each
+! board that is not being skipped.  If this routine is called after test
+! (Chek_Point_Mode = Failures), then the internal status is modified only
+! if failures occur on each board that is not being skipped so as not to change
+! the results of the component tests.
+!
+! The meaning of the function is slightly different when it is called before
+! test versus after test.  If called before test, the function returns True
+! if, no matter how many times it was cycled, pin test did finally pass.
+! If called after test, the function returns True if pin test failed but
+! passed after retry.
+!
+! Note: fn Pinsfailed is external to testmain.
+!
+global Pin_Msg2$, Number_Boards_On_Panel, BoardSet(*), Panel_Itself, Passed
+global Retry_PinTest$, Recycle_Vacuum$, Status(*), True, False
+global Cycle_Vacuum$, Failed_Pin_Test, Max_Times_To_Fix_Contact
+global Logging, Panel_Serial$, Serial$(*), Known_Good$
+global Chek_Point_Mode, Pretest, Failures, Chek_Point_Msg$
+
+if learning then return (False)
+Attempts = 0
+loop
+  Contact_Passed = not fn Pinsfailed (Chek_Point_Msg$)
+  Fail_Count = 0
+  if not Contact_Passed then
+    for I = 1 to Number_Boards_On_Panel
+      if BoardSet(I) then
+        board number is I
+        if dutfailed then
+          Status(I) = Failed_Pin_Test
+          if Fail_Count = 0 then
+            print Pin_Msg2$
+          else
+            if Fail_Count mod 16 = 0 then print
+          end if
+          print using "4d,#"; I
+          Fail_Count = Fail_Count + 1
+        else
+          if Chek_Point_Mode = Pretest then Status(I) = Passed
+        end if
+      end if
+    next I
+    if Fail_Count <> 0 then print
+  end if
+  Attempts = Attempts + 1
+  exit if Contact_Passed or (Attempts > Max_Times_To_Fix_Contact)
+  question Retry_PinTest$, Retry
+  exit if not Retry
+  if Logging and Chek_Point_Mode = Pretest then
+    for I = 1 to Number_Boards_On_Panel
+      board number is I
+      if Status(I) = Failed_Pin_Test then log board end Failed_Pin_Test
+    next I
+  end if
+  question Cycle_Vacuum$, Cycle
+  if Cycle then
+    faoff
+    question Recycle_Vacuum$
+    faon 1.5
+! Warning: Reducing the value for 'faon' from the default value of 1.5
+! can potentially cause testhead damage.
+    unpowered
+  end if
+  if Chek_Point_Mode = Pretest then
+    for I = Panel_Itself to Number_Boards_On_Panel
+      board number is I
+      clear failures
+      if Logging and Status(I) = Failed_Pin_Test then
+        log board start Serial$(I), Known_Good$, Panel_Serial$
+      end if
+    next I
+  end if
+end loop
+if Chek_Point_Mode = Failures then
+  Retest = False
+  ! Retest failing boards that pass pin test after having failed
+  for I = Panel_Itself to Number_Boards_On_Panel
+    if BoardSet(I) then
+      board number is I
+      if (not dutfailed) and Status(I) = Failed_Pin_Test then
+        Retest = True
+        if Logging then
+          log clear for retest
+          log board end Failed_Pin_Test
+        end if
+        clear failures
+        report clear
+      else
+        BoardSet(I) = False
+      end if
+    end if
+  next I
+  return (Retest)
+else
+  return (Contact_Passed)
+end if
+fnend
+
+!       Reset_Board Subroutine
+
+!##############################################################################
+sub Reset_Board
+   !---------------------------------------------------------------------------
+   ! This 'pause' section is placed here to remind the test programmer
+   ! that some powered tests may depend upon the TCK/TMS signals of
+   ! boundary scan chains/devices being held in a stable state.
+   ! When the testplan is run, the tests are properly sequenced
+   ! to assure that the disabled state is set; however, board level
+   ! circuitry may interfere with the persistence of the disabled state.
+   ! You may need to take additional measures; for example, you may
+   ! place your own pullup/down resistor in the fixture to assure a
+   ! stable TMS and/or TCK, or utilize a GP relay to disable some TCK
+   ! oscillator, etc.
+   ! For further explanation, see the Boundary-Scan Manual for the
+   ! section titled 'Maintaining Persistence of Boundary-Scan Disables'.
+   !
+   !---------------------------------------------------------------------------
+   ! When Boundary-Scan tests are complete, you may need to produce
+   ! a hard reset on the board-under-test to bring the ICs back into
+   ! operational mode.  One way of doing this is to cycle power to the
+   ! board using the following call:
+
+   call Cycle_Power_On_Board ! Cycle Power to reset digital state of board
+   ! call ScanWorks_Pretest    ! Configure volatile devices, if needed
+
+   ! Power cycling is time consuming and may not be necessary.  Some boards
+   ! may not need any resetting.  Others may have a digital reset node
+   ! you can toggle with a digital test to reset the board.
+   !
+   ! When you have evaluated the needs of this board and modified this
+   ! section, remove the pause and these comments.  You should take care
+   ! to document the action you have taken for future reference.
+   !---------------------------------------------------------------------------
+subend
+
+!##############################################################################
+! This routine maps a panel serial number to the serial numbers of each
+! of the boards.  If not user-modified, it simply concatenates a numeric
+! string to the serial number of the panel.
+!
+sub Map_Panel_to_Boards
+global Panel_Serial$, Serial$(*), Number_Boards_On_Panel, Panel_Itself
+Serial$(Panel_Itself) = Panel_Serial$
+for I = 1 to Number_Boards_On_Panel
+
+  !Serial$(I) = Panel_Serial$ & "-" & val$(I)
+  !properly update the serial number
+  Serial$(I) = fn Update_Serial_Num$(I, Panel_Serial$)
+next I
+subend
+
+!       Data Logging Subroutines
+
+!##############################################################################
+sub Start_Logging
+global Analog_Sample_Rate, QSTATS_Mode, Histo, Panel$, Tests_On_This_Panel
+global Sampling, True, False
+global Proc_Step$, Batch$, Oper$, Panel_Rev$, Board_Rev$(*), Testplan$
+global Testrev$, Panel_Serial$, Known_Good$, Number_Boards_On_Panel, Serial$(*)
+global Board$(*), Panel_Itself, Version_Label$
+
+Sampling = False
+if learning then
+  log level is all
+else
+  if rnd < Analog_Sample_Rate * (QSTATS_Mode = Histo) then
+    log level is analog without nhls, pins
+    Sampling = True
+  else
+    log level is indictments without nhls
+  end if
+end if
+print "Log level: ";lli$;";  Report level: ";rli$;";  Panel type: ";Panel$
+PS$ = Proc_Step$ | TR$ = Testrev$ | PR$ = Panel_Rev$ | TP$ = Testplan$
+P$ = Panel$
+if Tests_On_This_Panel = 1 then
+  for I = Panel_Itself to Number_Boards_On_Panel
+    board number is I
+    if I = Panel_Itself then
+      log board Panel$, PS$, Batch$, Oper$, PR$, TP$, TR$, "", "", Version_Label$
+    else
+      log board Board$(I), PS$, Batch$, Oper$, Board_Rev$(I), TP$, TR$, P$, PR$, Version_Label$
+    end if
+  next I
+end if
+for I = Panel_Itself to Number_Boards_On_Panel
+  board number is I
+  if I = Panel_Itself then
+    log board start Panel_Serial$, Known_Good$
+  else
+    log board start Serial$(I), Known_Good$, Panel_Serial$
+  end if
+next I
+print
+subend
+
+!##############################################################################
+def fn Get_Serial_Num$(Prompt$)
+global Bad_Serial_Image$, Default_Serial_Number$
+global Serial_Length, Using_BtBasic
+
+loop
+  Ident$=""
+  if Using_BtBasic then
+    print using """"&Prompt$&""",#"
+    input "",Ident$
+  else
+    input prompt Prompt$; Ident$
+  end if
+  if Ident$ = "" then Ident$ = Default_Serial_Number$
+  exit if Ident$ = Default_Serial_Number$
+  
+  
+  exit if (len(Ident$) = Serial_Length) or not Serial_Length
+  print using Bad_Serial_Image$; len(Ident$), Serial_Length
+end loop
+return (Ident$)
+!return (lwc$(Ident$))
+fnend
+
+!##############################################################################
+!  If the Board name contains any invalid characters, stop processing.
+sub Verify_Board_Names
+global Panel_Itself, Number_Boards_On_Panel
+global Stop_Msg$, Bad_Board_Name$, Board$(*)
+
+Last_Board$ = ""
+Found_Bad = 0
+for I = Panel_Itself to Number_Boards_On_Panel
+  if Board$(I) <> Last_Board$ then
+    if fn IllegalChars_In_Board_Name(Board$(I)) then
+      Found_Bad = 1
+      print Bad_Board_Name$  |   print "    ";Board$(I)
+    end if
+  end if
+  Last_Board$ = Board$(I)
+next I
+if Found_Bad then
+  print | print Stop_Msg$
+  beep
+  stop
+end if
+subend
+
+!##############################################################################
+! Check to see if the Board name contains any invalid characters, now only
+! check spaces.  Return 1 if yes, and 0 if no.
+def fn IllegalChars_In_Board_Name (Board$)
+global True, False
+
+if len (Board$) > 0 and pos (Board$, " ") > 0  then
+  return True
+else
+  return False
+end if
+fnend
+
+!##############################################################################
+sub Create_Log_Queue
+global Log_Path$, Directory_Exists, Queue_Error_Msg$, Stop_Msg$, Board$(*)
+global Log_File$(*), Number_Boards_On_Panel, Panel_Itself
+
+! Create a directory for the panel (Board$(0)) and for each unique board type
+! Note! It is assumed that boards are numbered contiguously within a type
+Last_Path$ = ""
+for I = Panel_Itself to Number_Boards_On_Panel
+  if I > 0 then Last_Path$ = Log_File$(I-1)
+  Log_File$(I) = Log_Path$ & Board$(I) & "/"
+  if nrun = 1 then
+    if Log_File$(I) <> Last_Path$ then
+      create dir Log_File$(I),Err
+      Err = Err and (Err <> Directory_Exists)
+      if Err then
+        print Queue_Error_Msg$  |   print "    ";errm$
+        print | print Stop_Msg$
+        beep
+        stop
+      end if
+    end if
+  end if
+next I
+Log_File$(Panel_Itself) = Log_File$(Panel_Itself) & "P-"
+subend
+
+!##############################################################################
+sub Setup_Logging
+global Panel_Serial$, Default_Serial_Number$, Testplan$, Batch$
+global Known_Good_Board$, Using_ART, Proc_Step$, Oper_Id_Prompt$
+global Panel$, Oper$, Known_Good_Prompt$
+global Serializing, Using_BtBasic
+
+randomize
+Proc_Step$             = "btest"
+Batch$                 = datetime$ ! Set to a unique identifier so that Q-STATS II can
+                                   ! calculate interboard handling and system idle times
+Testplan$              = Panel$
+Default_Serial_Number$ = "default_SN" & th$
+Panel_Serial$          = Default_Serial_Number$
+Known_Good_Board$      = ""
+Oper$                  = ""
+if Using_ART then
+  if Using_BtBasic then
+    print using """"&Oper_Id_Prompt$&""",#"
+    input "",Oper$
+  else
+    input prompt Oper_Id_Prompt$; Oper$
+  end if
+end if
+
+loop
+    if Serializing then Known_Good_Board$ = fn Get_Serial_Num$(Known_Good_Prompt$)
+
+    exit if (Known_Good_Board$[1;3] = "ESA") or (Known_Good_Board$[1;3] = "ESB")
+    
+    print "Please Ensure only P0030 board are inserted and scanned"
+    print "With this fixture, P0030 board serial numbers start with "
+    print "'ESA' or 'ESB'."
+    
+end loop
+
+subend
+
+!       Initialization Subroutines
+
+!##############################################################################
+sub Initializations
+global Logging, Using_Buffered_Reporting, Report_Printer$, Using_ART
+global Serializing, Logging_Started, First_Run$, Testmain_Revision$
+global Did_First_Run_Inits, QSTATS_Mode
+global True, False, Off, No_Histo, Histo, Pretest, Failures
+global Number_Boards_On_Panel, Panel_Itself, Using_Graphics
+global Version_Inits_Needed, Using_Multiple_Versions
+global Per_Run, Per_Board, Version_Prompting
+! IYET, WPR
+global Using_IYET, Using_WPR
+
+Testmain_Revision$="i3070 07.20p 0808 WN(panel)"
+True = 1
+False = 0
+Off = 0
+No_Histo = 1
+Histo = 2
+Pretest = 1
+Failures = 2
+Panel_Itself = 0
+Per_Run = 1
+Per_Board = 2
+Version_Inits_Needed = False
+call Set_Custom_Options
+call Initialize_Board_Constants ! external to testmain
+call Initialize_Constants
+call Verify_Board_Names
+
+! Initialize BoardSet to include all boards (needed by preloading of pintest)
+call Panel_Initialize_BoardSet(1)
+
+Logging_Started = False
+Logging = (QSTATS_Mode <> Off) or Using_ART
+if Using_ART then Serializing = True
+
+! call Get_Board_Revision        ! to interactively set Board_Rev$
+
+call Print_Startup_Message       ! prints out many variables' values
+acknowledge all failures
+learn capacitance off
+if Using_Buffered_Reporting then
+  buffered reporting on
+else
+  buffered reporting off
+end if
+report is Report_Printer$
+printer is *
+if Logging then
+  call Setup_Logging
+  call Create_Log_Queue
+else
+  log level is none
+end if
+if Using_ART then
+  report level is all
+else
+  report level is report
+end if
+if Using_Graphics then
+  ! If graphics are already running or a small monitor is in use,
+  ! the 'board graphics' statement generates an error.  Ignore it.
+  board graphics, Err
+  board graphics highlight clear all, Err
+end if
+if nrun = 1 then
+  print First_Run$
+  load board
+!'object checking on/off' statement goes here. Default is 'on'
+  object checking on
+end if
+if Using_Multiple_Versions and Version_Prompting = Per_Run then
+  call Get_Version_Label
+end if
+if nrun = 1 or Version_Inits_Needed then
+  call Do_Version_Inits
+  Did_First_Run_Inits=True
+end if
+
+! WPR
+if Using_WPR then probe report on
+
+! IYET
+if Using_IYET then call IYET_Initialize
+subend
+
+!##############################################################################
+sub Print_Startup_Message
+global Panel$, Panel_Rev$, Using_ART, QSTATS_Mode, Histo
+global Analog_Sample_Rate, Chek_Point_Mode, Failures
+global Report_Printer$, Using_Buffered_Reporting, Testmain_Revision$
+global Serializing, Serial_Length, Using_Graphics
+! IYET
+global Using_IYET, IYET_Report_On
+
+print using "@,2/"
+print "BOARD TYPE"
+print "  Name:     ";Panel$
+print "  Revision: ";Panel_Rev$
+print "AGILENT ICT TESTMAIN"
+print "  Report Printer: ";Report_Printer$
+print "  Revision:       ";Testmain_Revision$
+!   Build list of options to be printed
+!     O1$ is first line, O2$ is second line
+O1$ =  "  Options: "
+if Using_ART then O1$=O1$&" PR+"
+if QSTATS_Mode then O1$=O1$&" QSTATS"
+if Chek_Point_Mode then
+  O1$=O1$&" Chek-Point"
+  if Chek_Point_Mode = Failures then
+    O1$=O1$&"-Failures"
+  else
+    O1$=O1$&"-Pretest"
+  end if
+end if
+if Using_Graphics then O1$ = O1$ & " Graphics"
+if (O1$="  Options: ") then
+  O2$=O1$
+else
+  print O1$
+  O2$= "           "
+end if
+if Serializing then O2$=O2$&" Serializing("&val$(Serial_Length)&")"
+if learning then O2$=O2$&" LEARNING"
+if Using_Buffered_Reporting then O2$=O2$&" Buffered-Reporting"
+if QSTATS_Mode = Histo then
+  O2$=O2$&" Histograms("&val$(Analog_Sample_Rate)&")"
+end if
+if not (O2$ = "           ") then print O2$
+! IYET
+O3$="           "
+if Using_IYET then
+  O3$=O3$&" Intelligent Yield Enhancement Test"
+  if IYET_Report_On then O3$=O3$&"-Report"
+end if
+print O3$
+print using "2/"
+subend
+
+!##############################################################################
+sub Get_Board_Revision
+! NOTE: If Board revs are different from panel rev, modify this routine!
+global Panel_Rev$, Panel_Rev_Prompt$, Board_Rev$(*), Number_Boards_On_Panel
+global Panel_Itself, Using_BtBasic
+
+if Panel_Rev$ = "" then
+  if Using_BtBasic then
+    print using """"&Panel_Rev_Prompt$&""",#"
+    input "",Panel_Rev$
+  else
+    input prompt Panel_Rev_Prompt$; Panel_Rev$
+  end if
+  for I = Panel_Itself to Number_Boards_On_Panel
+    Board_Rev$(I) = Panel_Rev$
+  next I
+end if
+subend
+
+!##############################################################################
+sub Do_Version_Inits
+global Version_Inits_Needed, Chek_Point_Mode, True, False, Off
+
+unpowered
+faoff
+call Characterize                ! external to testmain
+if Chek_Point_Mode <> Off then   ! preload pins into testhead memory
+  Log_Level_Reset = False
+  if lli$ = "all" then
+    log level is none            ! turn off digital datalogging
+    Log_Level_Reset = True       ! for 'ignore all failures'
+  end if
+  ignore all failures
+  Err = fn Pinsfailed ("")       ! external to testmain
+  acknowledge all failures
+  if Log_Level_Reset = True then log level is all  ! reset datalogging
+end if
+Version_Inits_Needed = False
+subend
+
+!##############################################################################
+sub Get_Version_Label
+global Version_Label$, Version_Prompt$, True, False
+global Version_Inits_Needed, Using_Btbasic
+global Known_Good_Board$
+
+Old_Version$ = bvi$
+Version_Inits_Needed = True
+
+
+
+    if Known_Good_Board$[1;3] = "ESB" then
+    
+        board version is "ES150"
+        softkeys off
+        subexit
+    end if
+    
+    if Known_Good_Board$[1;3] = "ESA" then
+    
+        board version is "ES100"
+        softkeys off
+        subexit
+    end if
+
+
+
+
+    softkey 1, "r", "  ES100", "ES100"
+    softkey 2, "e", "", ""
+    softkey 3, "r", "  ES150", "ES150"
+    softkey 4, "e", "", ""
+    softkey 5, "e", "", ""
+    softkey 6, "e", "", ""
+    softkey 7, "e", "", ""
+    softkey 8, "e", "", ""
+
+    loop
+      Version_Label$ = ""
+      if Using_BtBasic then
+        print using """" & Version_Prompt$ & """,#"
+        input "", Version_Label$
+      else
+        input prompt Version_Prompt$; Version_Label$
+      end if
+      if Version_Label$ = "" or Version_Label$ = "*" then
+        board version is *, Err
+      else
+        board version is Version_Label$, Err
+      end if
+      exit if not Err
+      print errmlong$
+    end loop
+
+    softkeys off
+
+    if bvi$ = Old_Version$ then
+      Version_Inits_Needed = False
+    end if
+subend
+
+!##############################################################################
+sub Initialize_Constants
+global PreshortsMsg$, ShortsMsg$, PowerMsg$, DigitalMsg$, AnalogMsg$
+global DigitalFuncMsg$, AnalogPoweredMsg$, Chek_Point_Msg$, O$
+global Break_Detected, Mode$, Board_Not_Tested$
+global True, False, InvOn$, InvOff$, First_Run$, Panel_Rev_Prompt$
+global Pass_Msg$, Fail_Msg$, Pass_File$, Fail_File$, Stop_Msg$, Break_Msg$
+global No_Init_Warning$, Rep_Test$, Place_Board_Prompt$, Learning_Off_Msg$
+global Failed_In_Learn, Failed_Pin_Test, Failed_In_Preshorts, Failed_In_Shorts
+global Failed_In_Analog, Failed_In_Power_Supplies, Failed_In_Digital
+global Failed_In_Functional, Failed_In_BScan, Passed, Failed, Xed_Out
+global Directory_Exists, Log_Path$, System$, Queue_Error_Msg$
+global Break_Code, Error_Code, Using_BtBasic
+global But$, Put$, Serial_Prompt$, Bad_Serial_Image$, Oper_Id_Prompt$
+global Known_Good_Prompt$, Serial_Nr$, Failed_Board$
+global Retry_PinTest$, Cycle_Vacuum$, Recycle_Vacuum$
+global Pin_Msg$, Pin_Msg2$, Max_Times_To_Fix_Contact
+global BScanIntconMsg$, BScanIncktMsg$, All_Xout$
+global VectorlessTestMsg$, Failed_In_VectorlessTest
+global PolarityMsg$, Failed_In_Polarity_Check
+global BScanPShortsMsg$, No_Version_Init_Warning$
+global Version_Label$, Version_Prompt$
+global ConnectCheckMsg$, Failed_In_ConnectCheck
+global Failed_In_Flash, FlashProgMsg$
+global AnalogClusterMsg$, Failed_In_Analog_Cluster
+global PrePoweredMsg$, Failed_In_Pre_Powered
+global BScanSiNailsMsg$, Failed_In_BScan_SiNails
+global CoverExtendMsg$, Failed_In_Cover_Extend
+global SW_ScanPathVerifyMsg$, Failed_In_SW_Testing
+global SW_DrVerifyMsg$, SW_IrVerifyMsg$
+global SW_InterconnectMsg$, SW_MemInterconnectMsg$
+global SW_ClusterMsg$, SW_MemBistMsg$
+global SW_ProgrammingMsg$, Failed_In_SW_Programming
+global SW_FlashMsg$, Failed_In_SW_Flash
+global VerifyGroundsMsg$, Failed_In_Verify_Grounds
+global Bad_Board_Name$
+
+Using_BtBasic = True
+if localizable then Using_BtBasic = False
+
+if Using_BtBasic then
+  InvOn$                 = chr$(27)&"&dB"&chr$(7)  ! chr$(7) rings bell
+  InvOff$                = chr$(27)&"&d@"
+else
+  InvOn$                 = "<FONT COLOR=blue SIZE=+2><B>"
+  InvOff$                = "</B></FONT>"
+end if
+
+Break_Detected           = False
+Passed                   = 0
+Failed                   = 1
+Failed_Pin_Test          = 2
+Failed_In_Learn          = 3
+Failed_In_Shorts         = 4
+Failed_In_Analog         = 6
+Failed_In_Power_Supplies = 7
+Failed_In_Digital        = 8
+Failed_In_Functional     = 9
+Failed_In_Preshorts      = 10
+! Status codes 11, 12 reserved for use by EFS
+Xed_Out                  = 13     ! This status is maintained but not logged
+Failed_In_BScan          = 8      ! Equate to Failed_In_Digital
+Failed_In_VectorlessTest = 14
+Failed_In_Polarity_Check = 15
+Failed_In_ConnectCheck   = 16
+Failed_In_Analog_Cluster = 17
+Failed_In_Flash          = 18
+Failed_In_BScan_SiNails  = 19
+Failed_In_SW_Testing     = 8      ! Equate to Failed_In_Digital
+Failed_In_SW_Programming = 20
+Failed_In_SW_Flash       = 21
+Failed_In_Verify_Grounds = 22
+Failed_In_Cover_Extend   = 23
+Failed_In_Pre_Powered    = 24
+Error_Code               = 80
+Break_Code               = 82
+Directory_Exists         = 100312
+Log_Path$                = "./log_dir/"
+!Log_Path$                = btgetenv$("AGILENT3070_ROOT")&"/qm/logdata/testerq/"
+enter "uname -n |";System$              ! gets hostname (without domain)
+Max_Times_To_Fix_Contact = 4            ! MUST BE >= 1
+Pin_Msg$                 = "FIXTURE CONTACT PROBLEM"
+Pin_Msg2$                = "FIXTURE CONTACT PROBLEM ON FOLLOWING BOARDS:"
+O$                       = InvOn$&"Press YES"&InvOff$
+O$                       = O$&" to retry Pins Test, "&InvOn$&"NO"&InvOff$
+Retry_PinTest$           = O$&" to continue."
+O$                       = InvOn$&"Press YES"&InvOff$&" to cycle vacuum, "
+Cycle_Vacuum$            = O$&InvOn$&"NO"&InvOff$&" Otherwise."
+O$                       = InvOn$&"Press YES"&InvOff$
+Recycle_Vacuum$          = O$&" to turn vacuum on and continue testing."
+Queue_Error_Msg$         = "Cannot create directory to queue up log data.  Error is:"
+But$                     = "Board Under Test: "
+Put$                     = "Panel Under Test: "
+Serial_Prompt$           = InvOn$&"Enter"&InvOff$&" Panel Identifier: "
+O$                       = "/,""Identifier has wrong length ("",dd,""), must be "
+Bad_Serial_Image$        = O$&""",dd,""."",/"
+Oper_Id_Prompt$          = InvOn$&"Enter"&InvOff$&" Operator Identifier: "
+Known_Good_Prompt$       = InvOn$&"Enter"&InvOff$&" Verification Board Identifier: "
+Rep_Test$                = "Repeating test of the following boards: "
+First_Run$               = "Please stand by -- doing first-run initializations"
+No_Init_Warning$         = "** WARNING: FIRST RUN INITIALIZATIONS NOT COMPLETED --"
+No_Init_Warning$         = No_Init_Warning$ & " CLEARING NRUN **"
+O$                       = "** WARNING: VERSION CHANGE INITIALIZATIONS NOT"
+No_Version_Init_Warning$ = O$ & " COMPLETED -- CLEARING NRUN **"
+Pass_File$               = btgetenv$("AGILENT3070_ROOT")&"/util/pass"
+Fail_File$               = btgetenv$("AGILENT3070_ROOT")&"/util/fail"
+Board_Not_Tested$        = "Board not fully tested."
+Pass_Msg$                = "Selected boards on panel PASSED"
+Fail_Msg$                = "Selected boards on panel FAILED"
+Stop_Msg$                = "P R O G R A M   S T O P P E D"
+Break_Msg$               = "Break/Stop detected."
+Place_Board_Prompt$      = "Place panel on fixture and "&InvOn$&"press START"
+Panel_Rev_Prompt$        = InvOn$&"Enter"&InvOff$&" Panel Revision: "
+Learning_Off_Msg$        = "Learning turned off"
+if learning then
+  Mode$                  = "Learning "
+else
+  Mode$                  = "Testing "
+end if
+PreshortsMsg$            = "Preshorts"
+ShortsMsg$               = "Shorts"
+PowerMsg$                = "Setting Up Power Supplies"
+DigitalMsg$              = "Digital Incircuit"
+AnalogMsg$               = "Analog Unpowered"
+AnalogClusterMsg$        = "Analog Cluster"
+VectorlessTestMsg$       = "Vectorless Test"
+PolarityMsg$             = "Polarity Check"
+ConnectCheckMsg$         = "Connect Check"
+DigitalFuncMsg$          = "Digital Functional"
+AnalogPoweredMsg$        = "Analog Powered and Mixed"
+BScanIntconMsg$          = "Boundary Scan Interconnect"
+BScanIncktMsg$           = "Boundary Scan Incircuit"
+BScanPShortsMsg$         = "Boundary Scan Powered Shorts"
+BScanSiNailsMsg$         = "Boundary Scan Silicon Nails"
+CoverExtendMsg$          = "Cover-Extend"
+PrePoweredMsg$           = "Pre Powered Tests"
+FlashProgMsg$            = "Programming Flash"
+SW_ScanPathVerifyMsg$    = "Scan Path Verify with ScanWorks"
+SW_DrVerifyMsg$          = "DR Verify with ScanWorks"
+SW_IrVerifyMsg$          = "IR Verify with ScanWorks"
+SW_InterconnectMsg$      = "Interconnect with ScanWorks"
+SW_MemInterconnectMsg$   = "Memory Interconnect with ScanWorks"
+SW_ClusterMsg$           = "Cluster with ScanWorks"
+SW_MemBistMsg$           = "Memory BIST with ScanWorks"
+SW_ProgrammingMsg$       = "Programming Devices with ScanWorks"
+SW_FlashMsg$             = "Programming Flash with ScanWorks"
+VerifyGroundsMsg$        = "Verify Grounds"
+Serial_Nr$               = "Serial #: "
+All_Xout$                = "No boards selected; panel has FAILED."
+Chek_Point_Msg$          = "Testing Pin Contact"
+O$                       = "Further testing on this panel is suspended "
+Failed_Board$            = O$&"due to failures on boards: "
+Version_Label$           = ""
+Version_Prompt$          = InvOn$&"Enter"&InvOff$&" Version Label: "
+Bad_Board_Name$          = "Board name contains space, cannot proceed:"
+subend
+
+!##############################################################################
+sub Set_Custom_Options
+!  All variables likely to need to be changed are initialized here.
+!  The Usage flag(s) can be set True or False to selectively enable or
+!  disable the code needed for each indicated subsystem or feature.
+global Using_ART, QSTATS_Mode, Testrev$
+global Analog_Sample_Rate
+global Serializing, Serial_Length
+global Chek_Point_Mode, Using_Graphics
+global Report_Printer$, True, False, Using_Buffered_Reporting
+global Off, Pretest, Failures, No_Histo, Histo
+global Per_Run, Per_Board, Version_Prompting
+global Programming
+! IYET, WPR
+global Using_IYET, IYET_Shorts_Attempts, IYET_Analog_Tests_Attempts
+global IYET_Report_On, IYET_VectorlessTest_Attempts, IYET_Preshorts_Attempts
+global Using_WPR
+
+!   Usage flag(s)
+
+QSTATS_Mode                  = Histo       ! Choose {Off, No_Histo, Histo}
+Chek_Point_Mode              = Failures  ! Choose {Off, Pretest, Failures}
+Using_ART                    = False     ! Agilent Repair Tool.
+Serializing                  = True     ! Will get set True if Using_ART.
+Using_Buffered_Reporting     = True      ! Report failures during board handling
+Using_Graphics               = True      ! Will get set False if SimPlate fxt.
+Programming                  = False     ! Execute Flash and device programming.
+Using_IYET                   = False     ! Agilent Intelligent Yield Enhancement
+                                         ! Test (IYET)
+IYET_Report_On               = True      !   Create & display report at breaks
+IYET_Preshorts_Attempts      = 3         !   Preshorts re-test attempts
+IYET_Shorts_Attempts         = 3         !   Shorts re-test attempts
+IYET_Analog_Tests_Attempts   = 3         !   Analog unp. re-test attempts
+IYET_VectorlessTest_Attempts = 3         !   VectorlessTest re-test attempts
+Using_WPR                    = False     ! Agilent Worse Probe Report (WPR)
+
+!   Other parameters
+
+!Report_Printer$           = btgetenv$("RPR"&th$) ! Final report destination
+!Report_Printer$           = "/dev/com/1" ! Final report destination
+Report_Printer$           = "/dev/tty"  ! Send reports to the screen
+Testrev$                  = "RevA"      ! Update this faithfully
+Analog_Sample_Rate        = 1         ! Meaningful if QSTATS_Mode = Histo
+Serial_Length             = 10          ! Board Id Length (0 = no checking)
+Version_Prompting         = Per_Run   ! Choose {Per_Board, Per_Run}
+subend
+
+!##############################################################################
+sub Cleanup_Flash
+global Logging, Report_level$
+
+if Report_level$ = "all" then report level is all
+if Report_level$ = "none" then report level is none
+if Report_level$ = "log" then report level is log
+if Report_level$ = "report" then report level is report
+if Logging then
+  call Set_Log_Level
+end if
+subend
+
+!       Data Logging Subroutines
+
+!##############################################################################
+sub Set_Log_Level
+global Sampling
+if learning then
+  log level is all
+else
+  if Sampling then
+    log level is analog without nhls, pins
+  else
+    log level is indictments without nhls
+  end if
+end if
+subend
+
+sub Update_Levels(Report_level$, Log_level$)
+
+
+if Report_level$ = "all" then report level is all
+if Report_level$ = "none" then report level is none
+if Report_level$ = "log" then report level is log
+if Report_level$ = "report" then report level is report
+
+
+
+if Log_level$ = "all" then log level is all
+if Log_level$ = "analog" then log level is analog
+if Log_level$ = "board" then log level is board
+if Log_level$ = "failures" then log level is failures
+if Log_level$ = "indictments" then log level is indictments
+if Log_level$ = "manual" then log level is manual
+if Log_level$ = "none" then log level is none
+subend
+
+!       IYET Subroutines
+
+!##############################################################################
+sub IYET_Initialize
+
+global IYET_Path$, IYET_Failure_File$, IYET_Retest_Log_File$
+global O$, InvOn$, InvOff$
+global IYET_Vacuum_Off_Delay, IYET_Vacuum_On_Delay
+global IYET_Report_On, IYET_Max_Report_Count, IYET_File_Timeout
+global IYET_Err_Msg$, IYET_NoRT_Msg$
+global IYET_Test_Msg$, IYET_Max_Msg$, IYET_Fail_Msg$
+global IYET_Rpt1_Msg$, IYET_Rpt2_Msg$, IYET_Rpt3_Msg$
+global Chek_Point_Mode, Max_Times_To_Fix_Contact, Failures, True, False
+
+! Initialize paths and files
+IYET_Path$                = "./iyet/"
+IYET_Retest_Log_File$     = IYET_Path$&"retest"&datetime$[1;6]&".txt"
+IYET_Failure_File$        = IYET_Path$&"failure.txt"
+
+! Initialize variables
+IYET_Vacuum_Off_Delay     = 1.5
+IYET_Vacuum_On_Delay      = 1.5
+IYET_Max_Report_Count     = 10
+IYET_File_Timeout         = 5
+
+! Initialize message strings
+IYET_Err_Msg$  = "Error with file: "
+IYET_NoRT_Msg$ = "No re-tests found or missing file: "
+IYET_Test_Msg$ = "Re-testing "
+IYET_Max_Msg$  = "Maximum number of attempts for IYET must be >= 1."
+IYET_Fail_Msg$ = " failed, releasing panel..."
+
+! Initialize report strings
+IYET_Rpt1_Msg$ = "IYET Unstable Test Report - from file: "
+IYET_Rpt2_Msg$ = "Unstable Test"
+IYET_Rpt3_Msg$ = "# Re-tests"
+
+! When pins test is "Failures", disable redundant re-contacts
+if Chek_Point_Mode = Failures then Max_Times_To_Fix_Contact = 1
+
+! Create IYET directory
+create dir IYET_Path$, Error
+if (Error <> 100312) and (Error <> 0) then
+   print IYET_Err_Msg$ & IYET_Path$
+   print errmlong$(Error)
+   beep
+   stop
+end if
+
+! Generate and print re-test report
+if (Error = 100312) and IYET_Report_On then
+   print using "@"
+   print IYET_Rpt1_Msg$ & IYET_Retest_Log_File$
+   print
+   call IYET_Create_Report
+   print
+   O$             = InvOn$&"Press YES"&InvOff$
+   Prompt$ = O$&" to continue testing with IYET."
+   question Prompt$, Continue
+   if not Continue then stop
+   print using "@"
+end if
+subend
+
+!##############################################################################
+sub IYET_Create_Report
+! Collect all failing devices from log file and create retest report
+
+global IYET_Retest_Log_File$
+global IYET_Retest_Failing_Devices$(*), IYET_Top_Retests$(*)
+global IYET_Max_Report_Count, IYET_File_Timeout
+global IYET_NoRT_Msg$, IYET_Err_Msg$
+global IYET_Rpt1_Msg$, IYET_Rpt2_Msg$, IYET_Rpt3_Msg$
+
+! Open retest log file and get failing devices
+assign @Retest_Log, Error to IYET_Retest_Log_File$;read
+if Error then
+   print IYET_NoRT_Msg$ & IYET_Retest_Log_File$
+   print
+   subexit
+end if
+
+! Read all failing devices until end of file or until IYET_File_Timeout.
+Start_Time = msec
+I = 0
+loop
+   Input$ = ""
+   enter @Retest_Log,,Error;Input$
+   if (Error <> 0) and (Error <> 101007) then
+      print IYET_Err_Msg$ & IYET_Retest_Log_File$
+      print errmlong$(Error)
+      beep
+      stop
+   end if
+
+   ! Look for shorts failures, vectorless test failures
+   if pos(Input$," Report for """) then
+      End_Input = pos(Input$,""".")
+      Begin_Input = pos(Input$,"""") + 1
+      Temp_device$ = Input$[Begin_Input;End_Input - Begin_Input]
+      IYET_Retest_Failing_Devices$(I) = Temp_device$
+      I = I + 1
+   end if
+
+   ! Look for analog failures
+   if pos(Input$,"HAS FAILED") then
+      IYET_Retest_Failing_Devices$(I) = Input$[1;pos(Input$,"HAS FAILED")-1]
+      I = I + 1
+   end if
+
+   exit if Error = 101007
+
+   if (msec - Start_Time)/1000 > IYET_File_Timeout then
+      print IYET_Err_Msg$ & IYET_Retest_Log_File$
+      beep
+      stop
+   end if
+end loop
+
+assign @Retest_Log to *
+Device_Total = I-1
+
+! Count failures and remove duplicates
+K = 0
+for I = 0 to Device_Total
+   if IYET_Retest_Failing_Devices$(I) <> "" then
+      Temp$ =  IYET_Retest_Failing_Devices$(I)
+      Temp_Retests = 1
+      for J = I + 1 to Device_Total
+         if IYET_Retest_Failing_Devices$(J) <> "" then
+            if Temp$ = IYET_Retest_Failing_Devices$(J) then
+               Temp_Retests = Temp_Retests + 1
+               IYET_Retest_Failing_Devices$(J) = ""
+            end if
+         end if
+      next J
+      IYET_Top_Retests$(K,1) = Temp$
+      IYET_Top_Retests$(K,2) = val$(Temp_Retests)
+      K = K + 1
+   end if
+next I
+Top_Retest_Total = K-1
+
+! Sort ascending
+for I = 0 to Top_Retest_Total
+   for J = Top_Retest_Total to 1 step -1
+      if val(IYET_Top_Retests$(J,2)) > val(IYET_Top_Retests$(J-1,2)) then
+         Temp$ = IYET_Top_Retests$(J-1,1)
+         Temp_Retests = val(IYET_Top_Retests$(J-1,2))
+
+         IYET_Top_Retests$(J-1,1) = IYET_Top_Retests$(J,1)
+         IYET_Top_Retests$(J-1,2) = IYET_Top_Retests$(J,2)
+
+         IYET_Top_Retests$(J,1) = Temp$
+         IYET_Top_Retests$(J,2) = val$(Temp_Retests)
+      end if
+   next J
+next I
+
+! Print
+IYET_Max_Report_Count = IYET_Max_Report_Count - 1
+if Top_Retest_Total <= IYET_Max_Report_Count then
+   IYET_Max_Report_Count = Top_Retest_Total
+end if
+
+print IYET_Rpt2_Msg$;tab (50);IYET_Rpt3_Msg$
+
+for I = 0 to IYET_Max_Report_Count
+   print IYET_Top_Retests$(I,1);tab (55);IYET_Top_Retests$(I,2)
+next I
+subend
+
+!##############################################################################
+sub IYET_Vacuum_Off
+! Edit this subroutine to match your vacuum actuation commands. Note that the
+! delay for vacuum off is completed in the "IYET_Vacuum_On" subroutine.
+
+global IYET_Start_Vacuum_Off
+
+IYET_Start_Vacuum_Off = msec
+faoff 0
+subend
+
+!##############################################################################
+sub IYET_Vacuum_On(Prompt$)
+! Edit this subroutine to match your vacuum actuation commands. Do not
+! comment the line:
+!
+!  question Prompt$,Continue | if not Continue then stop
+!
+! unless your fixture is approved for actuation without operator
+! intervention.
+
+global IYET_Start_Vacuum_Off, IYET_Vacuum_Off_Delay, IYET_Vacuum_On_Delay
+
+question Prompt$,Continue | if not Continue then stop
+
+! Wait for vacuum to release
+loop
+   exit if (msec - IYET_Start_Vacuum_Off)/1000 > IYET_Vacuum_Off_Delay
+end loop
+
+faon IYET_Vacuum_On_Delay
+subend
+
+!##############################################################################
+sub IYET_Get_Failed_Tests (IYET_Abort)
+! Collect all failing tests from failure file.
+! To save time, this is call between the vacuum off and vacuum on.
+
+global IYET_Failing_Tests$(*), IYET_Test_Total, IYET_File_Timeout
+global IYET_Failure_File$, IYET_Retest_Log_File$, IYET_Err_Msg$
+global Report_Printer$, Serial$(*), True, False
+global Number_Boards_On_Panel, Status(*), BoardSet(*), Xed_Out
+
+! Save failure ticket to retry log file
+report is IYET_Retest_Log_File$,,Error;append
+if Error then
+   print IYET_Err_Msg$ & IYET_Retest_Log_File$
+   print errmlong$(Error)
+   beep
+   stop
+end if
+
+for I = 1 to Number_Boards_On_Panel
+   if BoardSet(I) then
+      board number is I
+      if boardfailed and Status(I) <> Xed_Out then
+         report "Board #:";bni
+         report "Version:";bvi$
+         report "S/N:"&Serial$(I) | report out
+      end if
+   end if
+next I
+
+! Save failure ticket to temporary file
+report is IYET_Failure_File$,,Err
+if Error then
+   print IYET_Err_Msg$ & IYET_Failure_File$
+   print errmlong$(Error)
+   beep
+   stop
+end if
+
+for I = 1 to Number_Boards_On_Panel
+   if BoardSet(I) then
+      board number is I
+      if boardfailed and Status(I) <> Xed_Out then
+         report out
+      end if
+   end if
+next I
+
+! Restore original report printer
+report is Report_Printer$
+
+! Open failure ticket and get failing tests
+assign @Ticket, Error to IYET_Failure_File$;read
+if Error then
+   print IYET_Err_Msg$ & IYET_Failure_File$
+   print errmlong$(Error)
+   beep
+   stop
+end if
+
+! Read all failing tests until end of file or until IYET_File_Timeout.
+Start_Time = msec
+I = 0
+IYET_Abort = False
+loop
+   Input$ = ""
+   enter @Ticket,,Error;Input$
+   if (Error <> 0) and (Error <> 101007) then
+      print IYET_Err_Msg$ & IYET_Failure_File$
+      print errmlong$(Error)
+      beep
+      stop
+   end if
+
+   ! Look for shorts, vectorless test failures
+   if pos(Input$," Report for """) then
+      End_Input = pos(Input$,""".")
+      Begin_Input = pos(Input$,"""") + 1
+      IYET_Failing_Tests$(I) = Input$[Begin_Input;End_Input - Begin_Input]
+      I = I + 1
+   end if
+
+   ! Look for analog test failures
+   if pos(Input$,"HAS FAILED") then
+      IYET_Failing_Tests$(I) = Input$[1;pos(Input$,"HAS FAILED")-1]
+      I = I + 1
+   end if
+
+   ! Look for compensation failures and set abort flag
+   if pos(Input$,"Compensation capacitance has not been") then
+      IYET_Abort = True
+   end if
+
+   exit if IYET_Abort
+
+   exit if Error = 101007
+
+   if (msec - Start_Time)/1000 > IYET_File_Timeout then
+      print IYET_Err_Msg$ & IYET_Failure_File$
+      beep
+      stop
+   end if
+end loop
+
+assign @Ticket to *
+IYET_Test_Total = I - 1
+
+! Abort if no tests are found
+if IYET_Test_Total < 0 then IYET_Abort = True
+
+! Clear report buffer and failures unless aborted
+if not IYET_Abort then
+   for I = 1 to Number_Boards_On_Panel
+      if BoardSet(I) then
+         board number is I
+         if boardfailed and Status(I) <> Xed_Out then
+            report clear
+            clear failures
+         end if
+      end if
+   next I
+end if
+subend
+
+!##############################################################################
+sub IYET_Update_Status (All_Passed)
+global True, False, Number_Boards_On_Panel, BoardSet(*), Status(*), Xed_Out
+
+All_Passed = True
+for I = 1 to Number_Boards_On_Panel
+   if BoardSet(I) then
+      board number is I
+      if boardfailed and Status(I) <> Xed_Out then
+         All_Passed = False
+      end if
+   end if
+next I
+subend
+
+!##############################################################################
+sub IYET_Retest_Failed_Tests
+global IYET_Failing_Tests$(*), IYET_Test_Total, IYET_Test_Msg$
+
+for I = 0 to IYET_Test_Total
+    print tab(11);IYET_Test_Msg$;lwc$(IYET_Failing_Tests$(I))
+    ! Update 'board number is'
+    board number is val(IYET_Failing_Tests$(I)[1;pos(IYET_Failing_Tests$(I),"%")-1])
+    test lwc$(IYET_Failing_Tests$(I))
+next I
+subend
+
+!##############################################################################
+sub IYET (TestType$, Maximum_Number_Attempts)
+global Failed_In_Preshorts, PreshortsMsg$, Failed_In_Shorts, ShortsMsg$
+global Failed_In_Analog, AnalogMsg$
+global Failed_In_VectorlessTest, VectorlessTestMsg$
+global Using_Buffered_Reporting, Logging, True, False, Mode$, All_Failed
+global Number_Boards_On_Panel, Status(*), BoardSet(*), Xed_Out
+global IYET_Fail_Msg$, IYET_Max_Msg$, IYET_Skip_Update_Status, Recycle_Vacuum$
+
+! Check that maximum number of attempts is OK.
+if Maximum_Number_Attempts < 1 then
+   print IYET_Max_Msg$
+   beep
+   stop
+end if
+Retests_Remaining = dround(Maximum_Number_Attempts,1)
+
+! Force log level, will be restored by Cleanup_Flash
+if Logging then
+  log level is none
+end if
+
+! Force buffered reporting, save flag to restore at end
+if not Using_Buffered_Reporting then
+   buffered reporting on
+   Not_Using_Buffered_Reporting = True
+end if
+
+! Call the test subroutine for the first time, skip update status...
+IYET_Skip_Update_Status = True
+
+if TestType$ = PreshortsMsg$ then
+   call Pre_Shorts (Failed_In_Preshorts, Mode$ & PreshortsMsg$)
+end if
+
+if TestType$ = ShortsMsg$ then
+   call Shorts (Failed_In_Shorts, Mode$ & ShortsMsg$)
+end if
+
+if TestType$ = AnalogMsg$ then
+   call Analog_Tests (Failed_In_Analog, Mode$ & AnalogMsg$)
+end if
+
+if TestType$ = VectorlessTestMsg$ then
+   call VectorlessTest (Failed_In_VectorlessTest, Mode$ & VectorlessTestMsg$)
+end if
+
+Retests_Remaining = Retests_Remaining - 1
+
+loop
+
+   ! Exit if first attempt is successful
+   call IYET_Update_Status (All_Passed)
+   exit if All_Passed
+
+   ! Exit if done with re-tests
+   exit if (Retests_Remaining = 0)
+
+   ! Process failures during vacuum cycle time
+   print tab(8);TestType$ & IYET_Fail_Msg$
+   call IYET_Vacuum_Off
+   call IYET_Get_Failed_Tests (IYET_Abort)
+   call IYET_Vacuum_On(Recycle_Vacuum$)
+
+   ! Exit if aborted
+   exit if IYET_Abort
+
+   ! For last time through the loop, restore logging and reporting
+   if Retests_Remaining = 1 then call Cleanup_Flash
+
+   ! Re-test
+   call IYET_Retest_Failed_Tests
+   Retests_Remaining = Retests_Remaining - 1
+
+end loop
+
+! Now some clean up. Could be redundant.
+
+! Restore Log & Report level
+call Cleanup_Flash
+
+! Restore 'unbuffered' reporting, after dumping report buffer
+if Not_Using_Buffered_Reporting then
+   for I = 1 to Number_Boards_On_Panel
+      if BoardSet(I) then
+         board number is I
+         if boardfailed and Status(I) <> Xed_Out then
+            report out
+         end if
+      end if
+   next I
+   buffered reporting off
+end if
+
+! Update status of final run of tests
+IYET_Skip_Update_Status = False
+
+if TestType$ = PreshortsMsg$ then
+   call Update_Status (Failed_In_Preshorts, All_Failed)
+end if
+
+if TestType$ = ShortsMsg$ then
+   call Update_Status (Failed_In_Shorts, All_Failed)
+end if
+
+if TestType$ = AnalogMsg$ then
+   call Update_Status (Failed_In_Analog, All_Failed)
+end if
+
+if TestType$ = VectorlessTestMsg$ then
+   call Update_Status (Failed_In_VectorlessTest, All_Failed)
+end if
+subend
+
+!                          END OF TESTMAIN
+!##############################################################################
+
+
+sub Initialize_Board_Constants
+global Panel$,Panel_Rev$
+global Board$(*),Board_Rev$(*),Number_Boards_On_Panel
+global Using_Multiple_Versions, True, False
+global Using_AwareTest
+
+   Number_Boards_On_Panel = 4
+   Panel$ = "P0030"
+   Panel_Rev$ = ""
+   Board$(0) = Panel$
+   Board_Rev$(0) = Panel_Rev$
+   for Board_Num = 1 to 4
+      Board$(Board_Num) = "Ext_Sounder"
+      Board_Rev$(Board_Num) = ""
+   next Board_Num
+
+! 'vacuum well' statement goes here (if required)
+   vacuum well a is 2,3
+   Using_Multiple_Versions = True
+   Using_AwareTest = False
+subend
+
+sub Panel_Initialize_BoardSet(State)
+global BoardSet(*)
+global Number_Boards_On_Panel
+
+   for Board_Num = 1 to Number_Boards_On_Panel
+      BoardSet(Board_Num) = State
+   next Board_Num
+subend
+
+sub Panel_Enable_Boards
+global BoardSet(*)
+global BoardSet_flash(*)
+global BoardSet_boards_1_to_4(*)
+
+!TPW: This subroutine is used by debug and is also provided for
+!TPW: use in custom testplans.
+   for Board_Num = 1 to 4
+      BoardSet_boards_1_to_4(Board_Num) = BoardSet(Board_Num)
+      BoardSet_flash(Board_Num) = BoardSet(Board_Num)
+   next Board_Num
+subend
+
+sub Panel_Disable_Boards
+global Number_Boards_On_Panel
+
+!TPW: This subroutine is supplied for use in custom testplans.
+!TPW: Note that BoardSet(*) is not modified - use this only in
+!TPW: test subroutines. BoardSet(*) will be modified in the
+!TPW: testmain after returning from this subroutine.
+   for Board_Num = 1 to Number_Boards_On_Panel
+      board number is Board_Num
+      if boardfailed then call Panel_Disable_Single_Board(Board_Num)
+   next Board_Num
+subend
+
+sub Panel_Disable_Single_Board(Board_Num)
+global BoardSet_flash(*)
+global BoardSet_boards_1_to_4(*)
+
+!TPW: This subroutine is supplied for use in custom testplans.
+   if (Board_Num >= 1) and (Board_Num <= 4) then
+      BoardSet_boards_1_to_4(Board_Num) = 0
+   end if
+subend
+
+sub Flash_Enable_Boards
+global BoardSet_flash(*)
+global BoardSet_boards_1_to_4(*)
+
+!TPW: This subroutine is used by flash and is also provided for
+!TPW: use in custom testplans.
+  for Board_Num = 1 to 4
+    BoardSet_boards_1_to_4(Board_Num) = BoardSet_flash(Board_Num)
+  next Board_Num
+subend
+
+sub Flash_Disable_Single_Board(Board_Num)
+global BoardSet_flash(*)
+global BoardSet_boards_1_to_4(*)
+
+!TPW: This subroutine is supplied for use in custom testplans.
+  if (Board_Num >= 1) and (Board_Num <= 4) then
+    BoardSet_boards_1_to_4(Board_Num) = 0
+    BoardSet_flash(Board_Num) = 0
+  end if
+subend
+
+sub Characterize
+global All_Failed, Failed_In_Learn
+global BoardSet_boards_1_to_4(*)
+
+   call Panel_Initialize_BoardSet(1)
+   call Panel_Enable_Boards
+   learn capacitance on
+   test "c16" on boards BoardSet_boards_1_to_4(*)
+   test "c20" on boards BoardSet_boards_1_to_4(*)
+   test "c34" on boards BoardSet_boards_1_to_4(*)
+   learn capacitance off
+   call Update_Status (Failed_In_Learn, All_Failed)
+subend
+
+sub Pre_Shorts (Status_Code, Message$)
+global All_Failed
+global BoardSet_boards_1_to_4(*)
+
+   if Message$ <> "" then  print tab(5);Message$
+   call Panel_Enable_Boards
+
+!   test "1%board_detect"
+!   test "bus_res_tests" on boards BoardSet_boards_1_to_4(*)
+!   test "d5%presence" on boards BoardSet_boards_1_to_4(*)
+!   test "d6%presence" on boards BoardSet_boards_1_to_4(*)
+!   test "d7%presence" on boards BoardSet_boards_1_to_4(*)
+!   test "d8%presence" on boards BoardSet_boards_1_to_4(*)
+!   test "d9%presence" on boards BoardSet_boards_1_to_4(*)
+!   test "d10%presence" on boards BoardSet_boards_1_to_4(*)
+!   test "d12%presence" on boards BoardSet_boards_1_to_4(*)
+!   test "d16%presence" on boards BoardSet_boards_1_to_4(*)
+
+
+   test "jp11%presence" on boards BoardSet_boards_1_to_4(*)
+   test "tb1%presence" on boards BoardSet_boards_1_to_4(*)
+   test "tb2%presence" on boards BoardSet_boards_1_to_4(*)
+
+
+
+   test "jp1%jp1_2" on boards BoardSet_boards_1_to_4(*)
+   test "jp2%jp1_2" on boards BoardSet_boards_1_to_4(*)
+   test "jp3%jp1_2" on boards BoardSet_boards_1_to_4(*)
+   test "jp4%jp1_2" on boards BoardSet_boards_1_to_4(*)
+   test "jp5%jp" on boards BoardSet_boards_1_to_4(*)
+   test "l1" on boards BoardSet_boards_1_to_4(*)
+   test "r56" on boards BoardSet_boards_1_to_4(*)
+   test "jp1%jp2_3" on boards BoardSet_boards_1_to_4(*)
+   test "jp2%jp2_3" on boards BoardSet_boards_1_to_4(*)
+   test "jp3%jp2_3" on boards BoardSet_boards_1_to_4(*)
+   test "jp4%jp2_3" on boards BoardSet_boards_1_to_4(*)
+   call Update_Status (Status_Code, All_Failed)
+subend
+
+
+
+sub Shorts (Status_Code, Message$)
+global All_Failed
+global BoardSet_boards_1_to_4(*)
+
+   if Message$ <> "" then  print tab(5);Message$
+   call Panel_Enable_Boards
+   test "shorts" on boards BoardSet_boards_1_to_4(*)
+   !for open plate only
+   !test "shorts_plate" on boards BoardSet_boards_1_to_4(*)
+   call Update_Status (Status_Code, All_Failed)
+subend
+
+sub Shorts_Plate (Status_Code, Message$)
+global All_Failed
+global BoardSet_boards_1_to_4(*)
+
+   if Message$ <> "" then  print tab(5);Message$
+   call Panel_Enable_Boards
+   test "shorts" on boards BoardSet_boards_1_to_4(*)
+   !for open plate only
+   !test "shorts_plate" on boards BoardSet_boards_1_to_4(*)
+   call Update_Status (Status_Code, All_Failed)
+subend
+
+sub Analog_Tests (Status_Code, Message$)
+global All_Failed
+global BoardSet_boards_1_to_4(*)
+
+   if Message$ <> "" then  print tab(5);Message$
+   call Panel_Enable_Boards
+
+   !test fixture components
+   test "fix_led" on boards BoardSet_boards_1_to_4(*)
+   test "relay_presence" on boards BoardSet_boards_1_to_4(*)
+   !feedback pin prevents
+   !switch mode test.
+   !gpconnect "1%___16836" to "1%___976"
+   !gpconnect "2%___16836" to "2%___976"
+   !gpconnect "3%___16836" to "3%___976"
+   !gpconnect "4%___16836" to "4%___976"
+   !wait 10m
+   !test "jp11_load" on boards BoardSet_boards_1_to_4(*)
+   !gpdisconnect all
+   !wait 10m
+   
+   test "c19" on boards BoardSet_boards_1_to_4(*)
+   test "r42" on boards BoardSet_boards_1_to_4(*)  
+   
+   test "c1" on boards BoardSet_boards_1_to_4(*)
+   test "c2" on boards BoardSet_boards_1_to_4(*)
+   test "c23" on boards BoardSet_boards_1_to_4(*)
+   test "c3" on boards BoardSet_boards_1_to_4(*)
+   test "c4" on boards BoardSet_boards_1_to_4(*)
+   test "c5" on boards BoardSet_boards_1_to_4(*)
+   test "c6" on boards BoardSet_boards_1_to_4(*)
+   test "c7" on boards BoardSet_boards_1_to_4(*)
+   test "c8" on boards BoardSet_boards_1_to_4(*)
+   test "c9" on boards BoardSet_boards_1_to_4(*)
+   test "c10" on boards BoardSet_boards_1_to_4(*)
+   test "c15" on boards BoardSet_boards_1_to_4(*)
+   test "c27" on boards BoardSet_boards_1_to_4(*)
+   test "c30" on boards BoardSet_boards_1_to_4(*)
+   test "c46" on boards BoardSet_boards_1_to_4(*)
+   test "c11" on boards BoardSet_boards_1_to_4(*)
+   test "c18" on boards BoardSet_boards_1_to_4(*)
+   test "c26" on boards BoardSet_boards_1_to_4(*)
+   test "c29" on boards BoardSet_boards_1_to_4(*)
+   test "c44" on boards BoardSet_boards_1_to_4(*)
+   test "c16" on boards BoardSet_boards_1_to_4(*)  !tcit
+
+   unpowered
+   !commented
+   test "c20" on boards BoardSet_boards_1_to_4(*)
+   test "c34" on boards BoardSet_boards_1_to_4(*)
+   test "c24" on boards BoardSet_boards_1_to_4(*)
+   test "c25" on boards BoardSet_boards_1_to_4(*)
+   test "c28" on boards BoardSet_boards_1_to_4(*)
+   test "c55" on boards BoardSet_boards_1_to_4(*)
+   test "l2" on boards BoardSet_boards_1_to_4(*)
+   test "r1" on boards BoardSet_boards_1_to_4(*)
+   test "r2" on boards BoardSet_boards_1_to_4(*)
+   test "r74" on boards BoardSet_boards_1_to_4(*)
+   test "r81" on boards BoardSet_boards_1_to_4(*)
+   !test "r4" on boards BoardSet_boards_1_to_4(*)
+   call Tup("r4",5)
+   test "r5" on boards BoardSet_boards_1_to_4(*)
+   test "r44" on boards BoardSet_boards_1_to_4(*)
+   test "r6" on boards BoardSet_boards_1_to_4(*)
+   test "r13" on boards BoardSet_boards_1_to_4(*)
+   test "r16" on boards BoardSet_boards_1_to_4(*)
+   test "r51" on boards BoardSet_boards_1_to_4(*)
+   test "r52" on boards BoardSet_boards_1_to_4(*)
+   test "r8" on boards BoardSet_boards_1_to_4(*)
+   test "r9" on boards BoardSet_boards_1_to_4(*)
+   test "r10" on boards BoardSet_boards_1_to_4(*)
+   test "r11" on boards BoardSet_boards_1_to_4(*)
+   test "r12" on boards BoardSet_boards_1_to_4(*)
+   test "r14" on boards BoardSet_boards_1_to_4(*)
+   test "r15" on boards BoardSet_boards_1_to_4(*)
+   test "r19" on boards BoardSet_boards_1_to_4(*)
+   test "r20" on boards BoardSet_boards_1_to_4(*)
+   test "r22" on boards BoardSet_boards_1_to_4(*)
+   !test "r23" on boards BoardSet_boards_1_to_4(*)
+   call Tup("r23",5)
+   test "r24" on boards BoardSet_boards_1_to_4(*)
+   test "r25" on boards BoardSet_boards_1_to_4(*)
+   test "r30" on boards BoardSet_boards_1_to_4(*)
+   test "r33" on boards BoardSet_boards_1_to_4(*)
+   test "r34" on boards BoardSet_boards_1_to_4(*)
+   test "r37" on boards BoardSet_boards_1_to_4(*)
+   test "r60" on boards BoardSet_boards_1_to_4(*)
+   test "r66" on boards BoardSet_boards_1_to_4(*)
+   test "r67" on boards BoardSet_boards_1_to_4(*)
+   test "r72" on boards BoardSet_boards_1_to_4(*)
+   test "r73" on boards BoardSet_boards_1_to_4(*)
+   test "r79" on boards BoardSet_boards_1_to_4(*)
+   test "r82" on boards BoardSet_boards_1_to_4(*)
+   test "r83" on boards BoardSet_boards_1_to_4(*)
+   test "r84" on boards BoardSet_boards_1_to_4(*)
+   test "r17" on boards BoardSet_boards_1_to_4(*)
+   test "r18" on boards BoardSet_boards_1_to_4(*)
+   test "r21" on boards BoardSet_boards_1_to_4(*)
+   test "r36" on boards BoardSet_boards_1_to_4(*)
+   test "r68" on boards BoardSet_boards_1_to_4(*)
+   test "r26" on boards BoardSet_boards_1_to_4(*)
+   test "r27" on boards BoardSet_boards_1_to_4(*)
+   test "r31" on boards BoardSet_boards_1_to_4(*)
+   test "r32" on boards BoardSet_boards_1_to_4(*)
+   test "r63" on boards BoardSet_boards_1_to_4(*)
+   test "r78" on boards BoardSet_boards_1_to_4(*)
+   test "r87" on boards BoardSet_boards_1_to_4(*)
+   test "r89" on boards BoardSet_boards_1_to_4(*)
+   test "r90" on boards BoardSet_boards_1_to_4(*)
+   test "r28" on boards BoardSet_boards_1_to_4(*)
+   test "r29" on boards BoardSet_boards_1_to_4(*)
+   test "r35" on boards BoardSet_boards_1_to_4(*)
+   test "r40" on boards BoardSet_boards_1_to_4(*)
+   test "r41" on boards BoardSet_boards_1_to_4(*)
+   test "r53" on boards BoardSet_boards_1_to_4(*)
+   test "r54" on boards BoardSet_boards_1_to_4(*)
+   test "r55" on boards BoardSet_boards_1_to_4(*)
+   test "r57" on boards BoardSet_boards_1_to_4(*)
+   test "r64" on boards BoardSet_boards_1_to_4(*)
+   test "r65" on boards BoardSet_boards_1_to_4(*)
+   test "r69" on boards BoardSet_boards_1_to_4(*)
+   test "r70" on boards BoardSet_boards_1_to_4(*)
+   test "r75" on boards BoardSet_boards_1_to_4(*)
+   test "r77" on boards BoardSet_boards_1_to_4(*)
+   test "r85" on boards BoardSet_boards_1_to_4(*)
+   test "r88" on boards BoardSet_boards_1_to_4(*)
+   test "r92" on boards BoardSet_boards_1_to_4(*)
+   test "r38" on boards BoardSet_boards_1_to_4(*)
+   test "r39" on boards BoardSet_boards_1_to_4(*)
+   test "r43" on boards BoardSet_boards_1_to_4(*)
+   test "r45" on boards BoardSet_boards_1_to_4(*)
+   test "r49" on boards BoardSet_boards_1_to_4(*)
+   test "r50" on boards BoardSet_boards_1_to_4(*)
+   test "r58" on boards BoardSet_boards_1_to_4(*)
+   test "r46" on boards BoardSet_boards_1_to_4(*)
+   test "r47" on boards BoardSet_boards_1_to_4(*)
+   test "r48" on boards BoardSet_boards_1_to_4(*)
+   !detected by Q13 test
+   !test "r86" on boards BoardSet_boards_1_to_4(*)
+   test "r59" on boards BoardSet_boards_1_to_4(*)
+   test "r61" on boards BoardSet_boards_1_to_4(*)
+   test "r62" on boards BoardSet_boards_1_to_4(*)
+   test "r71" on boards BoardSet_boards_1_to_4(*)
+   test "r76" on boards BoardSet_boards_1_to_4(*) !tcit ok
+   test "r80" on boards BoardSet_boards_1_to_4(*)
+   test "rt1" on boards BoardSet_boards_1_to_4(*)
+   test "d1" on boards BoardSet_boards_1_to_4(*)
+   test "d2" on boards BoardSet_boards_1_to_4(*)
+   test "d3" on boards BoardSet_boards_1_to_4(*)
+   test "d14" on boards BoardSet_boards_1_to_4(*)
+   test "d15" on boards BoardSet_boards_1_to_4(*)
+   !bidir diode unstable - presence test only
+   !test "d5%cr" on boards BoardSet_boards_1_to_4(*)
+   !test "d6%cr" on boards BoardSet_boards_1_to_4(*)
+   !test "d7%cr" on boards BoardSet_boards_1_to_4(*)
+   !test "d8%cr" on boards BoardSet_boards_1_to_4(*)
+   !test "d9%cr" on boards BoardSet_boards_1_to_4(*)
+   !test "d10%cr" on boards BoardSet_boards_1_to_4(*)
+   !test "d12%cr" on boards BoardSet_boards_1_to_4(*)
+   !test "d16%cr" on boards BoardSet_boards_1_to_4(*)
+   test "zd1%cr" on boards BoardSet_boards_1_to_4(*)
+   test "zd2%cr" on boards BoardSet_boards_1_to_4(*)
+   test "il1" on boards BoardSet_boards_1_to_4(*)
+   test "il2" on boards BoardSet_boards_1_to_4(*)
+   test "il3" on boards BoardSet_boards_1_to_4(*)
+   test "il4" on boards BoardSet_boards_1_to_4(*)
+   test "q1%cr" on boards BoardSet_boards_1_to_4(*)
+   test "q2%cr" on boards BoardSet_boards_1_to_4(*)
+   test "q8%cr" on boards BoardSet_boards_1_to_4(*)
+   test "q13%cr" on boards BoardSet_boards_1_to_4(*)
+   test "rl1%led" on boards BoardSet_boards_1_to_4(*)
+   test "rl2%led" on boards BoardSet_boards_1_to_4(*)
+   test "q3%q" on boards BoardSet_boards_1_to_4(*)
+   test "q4%q" on boards BoardSet_boards_1_to_4(*)  !diode check only
+   test "q9%q" on boards BoardSet_boards_1_to_4(*)
+   test "q14%q" on boards BoardSet_boards_1_to_4(*)
+   test "q15%q" on boards BoardSet_boards_1_to_4(*)
+   test "q17%q" on boards BoardSet_boards_1_to_4(*)
+   test "q18%q" on boards BoardSet_boards_1_to_4(*)
+   test "q5%q" on boards BoardSet_boards_1_to_4(*)  !BC diode check only
+   test "q6%q" on boards BoardSet_boards_1_to_4(*)
+   test "q10%q" on boards BoardSet_boards_1_to_4(*)
+   test "q11%q" on boards BoardSet_boards_1_to_4(*)
+   test "q12%q" on boards BoardSet_boards_1_to_4(*)
+   test "q16%q" on boards BoardSet_boards_1_to_4(*)
+   !clamping voltage too high - presence test only
+   !test "d5%ds" on boards BoardSet_boards_1_to_4(*)
+   !test "d6%ds" on boards BoardSet_boards_1_to_4(*)
+   !test "d7%ds" on boards BoardSet_boards_1_to_4(*)
+   !test "d8%ds" on boards BoardSet_boards_1_to_4(*)
+   !test "d9%ds" on boards BoardSet_boards_1_to_4(*)
+   !test "d10%ds" on boards BoardSet_boards_1_to_4(*)
+   !test "d12%ds" on boards BoardSet_boards_1_to_4(*)
+   !test "d16%ds" on boards BoardSet_boards_1_to_4(*)
+   test "zd1%ds" on boards BoardSet_boards_1_to_4(*)
+   !test "zd2%ds" on boards BoardSet_boards_1_to_4(*)  !tested in zd2%pwr
+   test "tx1%r1_2" on boards BoardSet_boards_1_to_4(*)
+   test "tx1%r2_3" on boards BoardSet_boards_1_to_4(*)
+   powered
+!print "Check during install that il3 & il4 fail when device is missing"
+   !test "il3%pwr" on boards BoardSet_boards_1_to_4(*)
+   !test "il4%pwr" on boards BoardSet_boards_1_to_4(*)
+   test "zd2%pwr" on boards BoardSet_boards_1_to_4(*)       !ok
+   test "q1%fet" on boards BoardSet_boards_1_to_4(*)        !ok
+   test "q2%fet" on boards BoardSet_boards_1_to_4(*)        !ok
+   test "q3%switch" on boards BoardSet_boards_1_to_4(*)     !ok
+   !test "q4%switch" on boards BoardSet_boards_1_to_4(*)     !R42 prevent switch test
+   !test "q5%switch" on boards BoardSet_boards_1_to_4(*)     !R43 prevent switch test
+   test "q6%switch" on boards BoardSet_boards_1_to_4(*)     !ok
+   test "q7%fet" on boards BoardSet_boards_1_to_4(*)        !ok
+   test "q8%fet" on boards BoardSet_boards_1_to_4(*)        !ok
+   test "q9%switch" on boards BoardSet_boards_1_to_4(*)     !ok
+   test "q10%switch" on boards BoardSet_boards_1_to_4(*)    !ok
+   test "q11%switch" on boards BoardSet_boards_1_to_4(*)    !ok
+   test "q12%switch" on boards BoardSet_boards_1_to_4(*)    !ok
+   test "q13%fet" on boards BoardSet_boards_1_to_4(*)       !ok
+   test "q14%switch" on boards BoardSet_boards_1_to_4(*)    !ok
+   test "q15%switch" on boards BoardSet_boards_1_to_4(*)    !ok
+   test "q16%switch" on boards BoardSet_boards_1_to_4(*)    !ok
+   test "q17%switch" on boards BoardSet_boards_1_to_4(*)    !ok
+   test "q18%switch" on boards BoardSet_boards_1_to_4(*)    !ok
+   test "rl1%opto" on boards BoardSet_boards_1_to_4(*)      !ok
+   test "rl2%opto" on boards BoardSet_boards_1_to_4(*)      !ok
+   !test "d5%pwr" on boards BoardSet_boards_1_to_4(*)       !unable to clamp at 18V
+   !test "d6%pwr" on boards BoardSet_boards_1_to_4(*)        !unable to clamp at 18V
+   !test "d7%pwr" on boards BoardSet_boards_1_to_4(*)        !unable to clamp at 18V
+   !test "d8%pwr" on boards BoardSet_boards_1_to_4(*)        !unable to clamp at 18V
+   !test "d9%pwr" on boards BoardSet_boards_1_to_4(*)        !unable to clamp at 18V
+   !test "d10%pwr" on boards BoardSet_boards_1_to_4(*)       !unable to clamp at 18V
+   !test "d12%pwr" on boards BoardSet_boards_1_to_4(*)       !unable to clamp at 18V
+   !test "d16%pwr" on boards BoardSet_boards_1_to_4(*)       !unable to clamp at 18V
+   unpowered
+
+
+
+
+
+   call Update_Status (Status_Code, All_Failed)
+subend
+
+sub VectorlessTest (Status_Code, Message$)
+global All_Failed
+global BoardSet_boards_1_to_4(*)
+
+   if Message$ <> "" then  print tab(5);Message$
+   call Panel_Enable_Boards
+   test "testjet" on boards BoardSet_boards_1_to_4(*)
+   call Update_Status (Status_Code, All_Failed)
+subend
+
+
+
+
+
+
+
+sub Disconnect_Power_On_Board(Board_Num)
+global BoardSet(*)
+
+   ! Check to see if in powered mode.
+   Must_Be_Powered = 223
+   rps 8, V, C, Error
+   if Error = Must_Be_Powered then subexit
+
+   if (Board_Num = 1) and BoardSet(1) then
+      ! Disconnect this board
+      dps 8
+   end if
+   if (Board_Num = 2) and BoardSet(2) then
+      ! Disconnect this board
+      dps 7
+   end if
+   if (Board_Num = 3) and BoardSet(3) then
+      ! Disconnect this board
+      dps 4
+   end if
+   if (Board_Num = 4) and BoardSet(4) then
+      ! Disconnect this board
+      dps 3
+   end if
+subend
+
+sub Report_Power_Supply_Limit(Pslimit)
+   I = 1
+   for Pscount = 1 to 8
+      if binand (Pslimit,I) then
+         report "Power Supply Number "
+         report Pscount
+         report "In Current Limit"
+      end if
+      I = 2*I
+   next Pscount
+   report "________________________________________"
+   report "Check for backwards"
+   report "IC's or Capacitors."
+   report "________________________________________"
+subend
+
+sub Setup_Power_Supplies (Status_Code, Message$)
+global All_Failed
+global BoardSet(*), BoardSet_boards_1_to_4(*)
+
+   if Message$ <> "" then  print tab(5);Message$
+   cps
+
+   !GP connects to disable U6
+
+   if BoardSet(1) then
+      board number is 1
+      gpconnect "1%ST_LINK_RESET" to "1%0V"
+      wait 10m
+      sps 8,12.80,0.60;optimize
+      Pslimit = pslimit
+      pass device
+      if Pslimit then
+         dps 8
+         fail device
+         call Report_Power_Supply_Limit(Pslimit)
+      end if
+      wait 10m
+      rps 8, V_1, I_1
+      test "1%power_rails"; I_1
+   end if
+   if BoardSet(2) then
+      board number is 2
+      gpconnect "2%ST_LINK_RESET" to "2%0V"
+      wait 50m
+      sps 7,12.80,0.60;optimize
+      Pslimit = pslimit
+      pass device
+      if Pslimit then
+         dps 7
+         fail device
+         call Report_Power_Supply_Limit(Pslimit)
+      end if
+      wait 10m
+      rps 8, V_2, I_2
+      test "2%power_rails"; I_2
+      !comment out for production
+      !if dutfailed then
+      !    pause
+      !end if
+   end if
+   if BoardSet(3) then
+      board number is 3
+      gpconnect "3%ST_LINK_RESET" to "3%0V"
+      wait 10m
+      sps 4,12.80,0.60;optimize
+      Pslimit = pslimit
+      pass device
+      if Pslimit then
+         dps 4
+         fail device
+         call Report_Power_Supply_Limit(Pslimit)
+      end if
+      wait 10m
+      rps 4, V_3, I_3
+      test "3%power_rails"; I_3
+   end if
+   if BoardSet(4) then
+      board number is 4
+      gpconnect "4%ST_LINK_RESET" to "4%0V"
+      wait 10m
+      sps 3,12.80,0.60;optimize
+      Pslimit = pslimit
+      pass device
+      if Pslimit then
+         dps 3
+         fail device
+         call Report_Power_Supply_Limit(Pslimit)
+      end if
+      wait 10m
+      rps 3, V_4, I_4
+      test "4%power_rails"; I_4
+   end if
+
+   call Update_Status (Status_Code, All_Failed)
+subend
+
+sub Cycle_Power_On_Board
+global PowerMsg$
+global Failed_In_Power_Supplies, Number_Boards_On_Panel, BoardSet(*)
+   for I = 1 to Number_Boards_On_Panel
+      if BoardSet(I) then call Disconnect_Power_On_Board (I)
+   next I
+   call Setup_Power_Supplies (Failed_In_Power_Supplies, PowerMsg$)
+subend
+
+
+
+sub Digital_Tests (Status_Code, Message$)
+global All_Failed
+global BoardSet_boards_1_to_4(*)
+
+   if Message$ <> "" then  print tab(5);Message$
+   call Panel_Enable_Boards
+   !U6 is testjet only
+   test "u6" on boards BoardSet_boards_1_to_4(*)
+   call Update_Status (Status_Code, All_Failed)
+subend
+
+
+
+sub Analog_Functional_Tests (Status_Code, Message$)
+global All_Failed
+global BoardSet_boards_1_to_4(*)
+
+   if Message$ <> "" then  print tab(5);Message$
+   call Panel_Enable_Boards
+
+   !power supplies
+   test "u3" on boards BoardSet_boards_1_to_4(*) !3V3 - L78L33
+   test "u8" on boards BoardSet_boards_1_to_4(*)
+
+   !light detector
+   test "il6" on boards BoardSet_boards_1_to_4(*) !ok
+
+   !Current sensing opamp
+   test "u1" on boards BoardSet_boards_1_to_4(*)  !ok
+
+   !digital relay
+   test "u2" on boards BoardSet_boards_1_to_4(*)  !ok
+   test "u10" on boards BoardSet_boards_1_to_4(*) !ok
+
+   !power rail sensing opamp
+   test "u4" on boards BoardSet_boards_1_to_4(*)
+
+
+
+
+   call Update_Status (Status_Code, All_Failed)
+subend
+
+sub Functional_Tests (Status_Code, Message$)
+global All_Failed
+global BoardSet_boards_1_to_4(*)
+global BoardSet(*)
+global Panel_Serial$
+global Product_Type$
+global Number_Boards_On_Panel
+dim BoardSet_1_and_3(1:4)   !used to open and close relays
+dim BoardSet_2_and_4(1:4)  !used to open and close relays
+
+    print tab(5);"Programmng Boards"
+
+!comment out for production
+Panel_Serial$ = Panel_Serial$[4;20]
+Product_Type$ = Panel_Serial$[1;3]
+
+!comment out when barcode increases
+Panel_Serial$ = "0"&Panel_Serial$
+
+Version_Folder$ = "V2"
+Version_File$   = "sounder.hex"
+
+
+
+
+    for I = 1 to Number_Boards_On_Panel
+        if I mod 2 = 0 then
+            BoardSet_1_and_3(I) = 0
+            BoardSet_2_and_4(I) = BoardSet_boards_1_to_4(I)
+        else
+            BoardSet_1_and_3(I) = BoardSet_boards_1_to_4(I)
+            BoardSet_2_and_4(I) = 0
+        end if
+
+    next I
+
+    !for this subroutine the STM8 needs to be enabled.
+
+    !ensure all relays are off (disconnected from STLINKS)
+    test "relay_off" on boards BoardSet_boards_1_to_4(*)
+    wait 10m
+
+    !lookup to see what STLINK devices are connected.
+    !this does block the program if the correct
+    !STLINKS are not connected
+    execute "get_stlink_info.bat" &" "& Version_Folder$ &" "& Version_File$
+
+    !generate the individual data hex files.
+    !see P0030 Serial Number Programming Document
+    Num$ = val$(Number_Boards_On_Panel)
+    execute "c:/python34/python generate_data.py " & Num$ &" "& Product_Type$ &" "& Panel_Serial$ &" "& Version_Folder$
+    gpdisconnect all
+    !switch in the relays on the left (if the board has passed so far)
+    test "relay_on" on boards BoardSet_1_and_3(*)
+    wait 10m
+
+    !program boards 1 and 3.
+    execute "program_1_3.bat"
+
+
+    !switch all relays off.
+    test "relay_off" on boards BoardSet_boards_1_to_4(*)
+    wait 10m
+
+    !switch in the relays on the right (if the board has passed so far)
+    test "relay_on" on boards BoardSet_2_and_4(*)
+    wait 10m
+
+    execute "program_2_4.bat"
+
+
+    test "relay_off" on boards BoardSet_boards_1_to_4(*)
+    wait 10m
+
+
+
+    for I = 1 to Number_Boards_On_Panel
+        board number is I
+        if BoardSet(I) then
+            
+            Result_Fname$ = "./stm8/prog_res_"&val$(I)
+            enter Result_Fname$; Result
+            
+            
+            if Result = 2 then
+                print "     An STLINK programmer program has froze"
+                print "     Please replug - then test again."
+                test val$(I)& "%programming_report"; Result
+            end if
+            
+            if Result = 0 then
+                execute "get_stlink_info.bat"&" "& Version_Folder$ &" "& Version_File$
+                wait 10m
+                test val$(I)&"%relay_on"
+                wait 10m
+                execute "program_"&val$(I)&".bat"
+                enter Result_Fname$; Result
+                
+            end if
+            
+            
+            
+            
+            test val$(I)& "%programming_report"; Result
+        end if
+
+    next I
+
+    gpconnect "1%ST_LINK_RESET" to "1%0V"
+    gpconnect "2%ST_LINK_RESET" to "2%0V"
+    gpconnect "3%ST_LINK_RESET" to "3%0V"
+    gpconnect "4%ST_LINK_RESET" to "4%0V"
+    
+    
+    
+    test "relay_off" on boards BoardSet_boards_1_to_4(*)
+    wait 10m
+    for I =1 to Number_Boards_On_Panel
+        !call Disconnect_Power_On_Board(I)
+        gpconnect val$(I)&"%ST_LINK_RESET" to val$(I)&"%0V"
+        wait 100m
+    next I
+
+    !unpowered
+
+
+
+
+
+    !LED drive values (to see if the STM8 has been programmed
+    !test "led_functional" on boards BoardSet_boards_1_to_4(*)
+
+
+   !if Message$ <> "" then  print tab(5);Message$
+   call Panel_Enable_Boards
+   call Update_Status (Status_Code, All_Failed)
+subend
+
+sub Tup (Test$, N)
+
+    for I = 1 to 4
+        
+        board number is I
+        looptest N val$(I) & "%" & Test$
+    
+    
+    next I
+    !board number is *
+
+subend
+
+
+
+
+def fnPinsfailed (Message$)
+global BoardSet(*)
+global BoardSet_boards_1_to_4(*)
+
+   if Message$ <> "" then  print tab(5);Message$
+   call Panel_Enable_Boards
+   Pins_failed_flag = 0
+   test "pins" on boards BoardSet_boards_1_to_4(*)
+   for Board_Num = 1 to 4
+      board number is Board_Num
+      if BoardSet(Board_Num) and dutfailed then Pins_failed_flag = 1
+   next Board_Num
+   !for shorting plate only
+   !test "pins_plate" on boards BoardSet_boards_1_to_4(*)
+   !for Board_Num = 1 to 4
+   !   board number is Board_Num
+   !   if BoardSet(Board_Num) and dutfailed then Pins_failed_flag = 1
+   !next Board_Num
+   return Pins_failed_flag
+fnend
+
+def fnPins_platefailed (Message$)
+global BoardSet(*)
+global BoardSet_boards_1_to_4(*)
+
+   if Message$ <> "" then  print tab(5);Message$
+   call Panel_Enable_Boards
+   Pins_failed_flag = 0
+   test "pins_plate" on boards BoardSet_boards_1_to_4(*)
+   for Board_Num = 1 to 4
+      board number is Board_Num
+      if BoardSet(Board_Num) and dutfailed then Pins_failed_flag = 1
+   next Board_Num
+   !for shorting plate only
+   !test "pins_plate" on boards BoardSet_boards_1_to_4(*)
+   !for Board_Num = 1 to 4
+   !   board number is Board_Num
+   !   if BoardSet(Board_Num) and dutfailed then Pins_failed_flag = 1
+   !next Board_Num
+   return Pins_failed_flag
+fnend
+
+
+def fn Update_Serial_Num$(Board_Position, Serial$)
+
+    !board 1 has no change to serial number
+    !so modifier = 0.
+    !The serial number for board 2 will be
+    !increase by 1, so board number - 1
+    !will equal the serial modifier.
+    Serial_Modifier = Board_Position - 1
+    
+    Job_Code$ = Serial$[1;3]
+    
+    !The length is obtained to allow us to 
+    !append the correct number of zeros.
+    Base_Serial_number_Len = len(Serial$[4;20])
+    Base_Serial_number    = val(Serial$[4;20])
+    
+    !by adding the modifier we now have the actual
+    !serial number as printed on the board.
+    Serial_Number$ = val$(Base_Serial_number + Serial_Modifier)
+    Serial_Number_Len = len(Serial_Number$)
+    
+    Zeros_Required = Base_Serial_number_Len - Serial_Number_Len
+    !append the zeros to the start of the serial number
+    for I = 1 to Zeros_Required
+        Serial_Number$ = "0" & Serial_Number$
+    next I
+    
+    
+    return Job_Code$ & Serial_Number$
+    
+
+fnend
+
+! End of Testplan Writer Generated Testplan.
+

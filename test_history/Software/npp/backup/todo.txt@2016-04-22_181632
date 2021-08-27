@@ -1,0 +1,11 @@
+Check the pnps preceding q9 to ensure proper grounding
+
+look at powered q4 switching test
+try adding strobe frequency measurement test for Q5
+
+
+look into q18 powered test (not essential)
+
+
+look into IL3 and IL4 powered test - done
+Ensure that IL3 and IL4 detect a missing component (wait till install)
